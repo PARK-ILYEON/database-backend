@@ -1,0 +1,27 @@
+{
+  "name": "sungjuk-backend",
+  "version": "1.0.0",
+  "description": "성적 처리 통합 관리 시스템 백엔드",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "migrate": "psql \"$DATABASE_URL\" -f migrations/001_init.sql",
+    "verify:parsers": "node scripts/verify-parsers.js",
+    "create-admin": "node scripts/create-admin.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.2.0",
+    "pg": "^8.22.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.4"
+  }
+}
