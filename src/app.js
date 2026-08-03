@@ -1,4 +1,5 @@
 const express = require('express');
+const cors = require('cors');
 const examRoundsRouter = require('./routes/examRounds');
 const studentsRouter = require('./routes/students');
 const portalRouter = require('./routes/portal');
@@ -8,6 +9,13 @@ const { requireAdmin } = require('./middleware/requireAdmin');
 
 function createApp() {
   const app = express();
+  // 프론트엔드(별도 도메인/로컬 파일)에서 API를 호출할 수 있도록 CORS 허용.
+  // 운영에서 특정 도메인만 허용하고 싶으면 CORS_ORIGIN 환경변수에 콤마로 구분해 지정.
+  const allowedOrigins = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : null;
+  app.use(cors({
+    origin: allowedOrigins || true,
+    credentials: true
+  }));
   app.use(express.json());
 
   app.get('/health', (req, res) => res.json({ ok: true }));

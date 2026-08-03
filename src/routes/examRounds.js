@@ -25,6 +25,53 @@ router.post('/', async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
+// 빠른 회차 생성 — 지점/교수/반 이름만으로 (없으면 자동 생성) 회차까지 한 번에 만든다.
+// FK 관계(academies→professors→classes→exam_rounds)를 매번 관리자가 직접 ID로 다루지 않도록
+// 화면에서 이름만 입력받아 쓰는 용도.
+router.post('/quick-create', async (req, res) => {
+  const { academy_name, professor_name, class_name, round_label, exam_year, exam_date } = req.body;
+  if (!academy_name || !professor_name || !class_name || !round_label || !exam_year) {
+    return res.status(400).json({ error: 'academy_name, professor_name, class_name, round_label, exam_year는 필수입니다.' });
+  }
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    let { rows: acRows } = await client.query('SELECT id FROM academies WHERE name=$1', [academy_name]);
+    let academyId = acRows[0] ? acRows[0].id : (await client.query(
+      'INSERT INTO academies (name) VALUES ($1) RETURNING id', [academy_name]
+    )).rows[0].id;
+
+    let { rows: profRows } = await client.query('SELECT id FROM professors WHERE name=$1', [professor_name]);
+    let professorId = profRows[0] ? profRows[0].id : (await client.query(
+      'INSERT INTO professors (name) VALUES ($1) RETURNING id', [professor_name]
+    )).rows[0].id;
+
+    let { rows: classRows } = await client.query(
+      'SELECT id FROM classes WHERE professor_id=$1 AND class_name=$2 AND academy_id=$3',
+      [professorId, class_name, academyId]
+    );
+    let classId = classRows[0] ? classRows[0].id : (await client.query(
+      'INSERT INTO classes (professor_id, class_name, academy_id) VALUES ($1,$2,$3) RETURNING id',
+      [professorId, class_name, academyId]
+    )).rows[0].id;
+
+    const { rows: roundRows } = await client.query(
+      `INSERT INTO exam_rounds (class_id, round_label, exam_year, exam_date, status)
+       VALUES ($1,$2,$3,$4,'draft') RETURNING *`,
+      [classId, round_label, exam_year, exam_date || null]
+    );
+
+    await client.query('COMMIT');
+    res.status(201).json({ ...roundRows[0], academy_name, professor_name, class_name });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'DB 저장 실패: ' + err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // 회차 목록 (교수/연도 필터)
 router.get('/', async (req, res) => {
   const { professor, year } = req.query;
