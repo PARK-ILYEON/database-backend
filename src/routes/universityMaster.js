@@ -15,12 +15,13 @@ function toNullableInt(raw) {
 }
 
 router.get('/', async (req, res) => {
-  const { year, univ_name } = req.query;
+  const { year, univ_name, dept_name } = req.query;
   const conditions = [];
   const params = [];
   let sql = 'SELECT * FROM university_master';
   if (year) { params.push(Number(year)); conditions.push(`year = $${params.length}`); }
   if (univ_name) { params.push(`%${univ_name}%`); conditions.push(`univ_name ILIKE $${params.length}`); }
+  if (dept_name) { params.push(`%${dept_name}%`); conditions.push(`dept_name ILIKE $${params.length}`); }
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
   sql += ' ORDER BY univ_name, dept_name';
   const { rows } = await db.query(sql, params);

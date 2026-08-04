@@ -47,6 +47,74 @@ router.get('/lookup', async (req, res) => {
   res.json(rows);
 });
 
+// 학생 포털 - 오답노트 (누적 발행 회차 중 오답률 상위 5문항, 로그인 불필요)
+router.get('/wrong-questions', async (req, res) => {
+  const { exam_no } = req.query;
+  if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
+
+  const { rows } = await db.query(
+    `SELECT er.round_label, er.exam_year, oa.question_no, ak.point, ak.area_tag, ak.correct_answer, oa.student_answer,
+            stats.correct_count, stats.total_count
+     FROM omr_answers oa
+     JOIN omr_uploads ou ON ou.id = oa.omr_upload_id
+     JOIN exam_rounds er ON er.id = ou.exam_round_id AND er.status = 'published'
+     JOIN answer_keys ak ON ak.exam_round_id = er.id AND ak.question_no = oa.question_no
+     JOIN LATERAL (
+       SELECT COUNT(*) FILTER (WHERE oa2.is_correct)::int AS correct_count, COUNT(*)::int AS total_count
+       FROM omr_answers oa2
+       WHERE oa2.omr_upload_id = ou.id AND oa2.question_no = oa.question_no
+     ) stats ON true
+     WHERE oa.exam_no = $1 AND oa.is_correct = false
+     ORDER BY (stats.correct_count::float / NULLIF(stats.total_count,0)) ASC
+     LIMIT 5`,
+    [exam_no]
+  );
+  res.json(rows.map(r => ({
+    roundLabel: r.round_label,
+    examYear: r.exam_year,
+    questionNo: r.question_no,
+    point: Number(r.point),
+    areaTag: r.area_tag,
+    correctAnswer: r.correct_answer,
+    studentAnswer: r.student_answer,
+    correctRate: r.total_count > 0 ? Math.round((r.correct_count / r.total_count) * 1000) / 10 : null
+  })));
+});
+
+// 학생 포털 - 희망학과 기준 석차 (가장 최근 발행 회차, 로그인 불필요)
+router.get('/dept-rank', async (req, res) => {
+  const { exam_no } = req.query;
+  if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
+
+  const { rows } = await db.query(
+    `SELECT er.id AS exam_round_id, er.round_label, er.exam_year, re.dept, ss.total_score,
+       (SELECT COUNT(*)+1 FROM student_scores ss2
+        JOIN rosters r2 ON r2.exam_round_id = ss2.exam_round_id
+        JOIN roster_entries re2 ON re2.roster_id = r2.id AND re2.exam_no = ss2.exam_no
+        WHERE ss2.exam_round_id = ss.exam_round_id AND re2.dept = re.dept AND ss2.total_score > ss.total_score
+       )::int AS dept_rank,
+       (SELECT COUNT(*) FROM student_scores ss3
+        JOIN rosters r3 ON r3.exam_round_id = ss3.exam_round_id
+        JOIN roster_entries re3 ON re3.roster_id = r3.id AND re3.exam_no = ss3.exam_no
+        WHERE ss3.exam_round_id = ss.exam_round_id AND re3.dept = re.dept
+       )::int AS dept_applicants
+     FROM student_scores ss
+     JOIN exam_rounds er ON er.id = ss.exam_round_id AND er.status='published'
+     JOIN rosters r ON r.exam_round_id = er.id
+     JOIN roster_entries re ON re.roster_id = r.id AND re.exam_no = ss.exam_no
+     WHERE ss.exam_no = $1 AND re.dept IS NOT NULL AND re.dept <> ''
+     ORDER BY er.exam_date DESC NULLS LAST, er.id DESC
+     LIMIT 1`,
+    [exam_no]
+  );
+  if (rows.length === 0) return res.json(null);
+  const r = rows[0];
+  res.json({
+    roundLabel: r.round_label, examYear: r.exam_year, dept: r.dept,
+    deptRank: r.dept_rank, deptApplicants: r.dept_applicants
+  });
+});
+
 // 자가채점 - 임시 수험번호 발급
 router.post('/self-quiz/issue', async (req, res) => {
   const { name } = req.body;
