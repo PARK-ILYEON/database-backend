@@ -72,6 +72,91 @@ router.post('/quick-create', async (req, res) => {
   }
 });
 
+// 관리자 대시보드 요약 (전체 회차/발행 회차 수, 채점된 학생 수, 최근 회차 평균점수 등)
+router.get('/dashboard-summary', async (req, res) => {
+  const { rows: countRows } = await db.query(
+    `SELECT
+       COUNT(*)::int AS round_count,
+       COUNT(*) FILTER (WHERE status='published')::int AS published_count,
+       COUNT(*) FILTER (WHERE status='draft')::int AS draft_count
+     FROM exam_rounds`
+  );
+  const { rows: studentCountRows } = await db.query(
+    `SELECT COUNT(DISTINCT exam_no)::int AS student_count FROM student_scores`
+  );
+  const { rows: recentRounds } = await db.query(
+    `SELECT er.id, er.round_label, er.exam_year, er.exam_date, er.status,
+            c.class_name, p.name AS professor_name,
+            COUNT(ss.id)::int AS student_count,
+            ROUND(AVG(ss.total_score)::numeric, 1) AS avg_score
+     FROM exam_rounds er
+     JOIN classes c ON c.id = er.class_id
+     JOIN professors p ON p.id = c.professor_id
+     LEFT JOIN student_scores ss ON ss.exam_round_id = er.id
+     GROUP BY er.id, c.class_name, p.name
+     ORDER BY er.exam_date DESC NULLS LAST, er.id DESC
+     LIMIT 5`
+  );
+  res.json({
+    ...countRows[0],
+    ...studentCountRows[0],
+    recentRounds
+  });
+});
+
+// 회차별 채점 결과 목록 (성적표/학생관리 화면용)
+router.get('/:id/results', async (req, res) => {
+  const examRoundId = req.params.id;
+  const { rows } = await db.query(
+    `SELECT ss.exam_no, ss.total_score, ss.overall_rank, ss.percentile, ss.area_scores, ss.computed_at,
+            re.real_name, re.masked_name, re.dept, re.track
+     FROM student_scores ss
+     LEFT JOIN rosters r ON r.exam_round_id = ss.exam_round_id
+     LEFT JOIN roster_entries re ON re.roster_id = r.id AND re.exam_no = ss.exam_no
+     WHERE ss.exam_round_id = $1
+     ORDER BY ss.overall_rank ASC NULLS LAST, ss.total_score DESC`,
+    [examRoundId]
+  );
+  const scores = rows.map(r => Number(r.total_score));
+  const summary = {
+    studentCount: rows.length,
+    avgScore: scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null,
+    maxScore: scores.length ? Math.max(...scores) : null,
+    minScore: scores.length ? Math.min(...scores) : null,
+    unmatchedCount: rows.filter(r => !r.real_name && !r.masked_name).length
+  };
+  res.json({ examRoundId, summary, students: rows });
+});
+
+// 문항별 정답률 통계 (문항 통계 화면용)
+router.get('/:id/question-stats', async (req, res) => {
+  const examRoundId = req.params.id;
+  const { rows } = await db.query(
+    `SELECT ak.question_no, ak.correct_answer, ak.point, ak.area_tag,
+            COUNT(oa.id) FILTER (WHERE oa.is_correct = true)::int AS correct_count,
+            COUNT(oa.id) FILTER (WHERE oa.student_answer IS NOT NULL)::int AS answered_count,
+            COUNT(oa.id)::int AS total_count
+     FROM answer_keys ak
+     LEFT JOIN omr_uploads ou ON ou.exam_round_id = ak.exam_round_id AND ou.status='done'
+     LEFT JOIN omr_answers oa ON oa.omr_upload_id = ou.id AND oa.question_no = ak.question_no
+     WHERE ak.exam_round_id = $1
+     GROUP BY ak.question_no, ak.correct_answer, ak.point, ak.area_tag
+     ORDER BY ak.question_no`,
+    [examRoundId]
+  );
+  const questions = rows.map(r => ({
+    questionNo: r.question_no,
+    correctAnswer: r.correct_answer,
+    point: Number(r.point),
+    areaTag: r.area_tag,
+    correctCount: r.correct_count,
+    answeredCount: r.answered_count,
+    totalCount: r.total_count,
+    correctRate: r.total_count > 0 ? Math.round((r.correct_count / r.total_count) * 1000) / 10 : null
+  }));
+  res.json({ examRoundId, questions });
+});
+
 // 회차 목록 (교수/연도 필터)
 router.get('/', async (req, res) => {
   const { professor, year } = req.query;

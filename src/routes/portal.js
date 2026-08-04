@@ -3,6 +3,30 @@ const crypto = require('crypto');
 const db = require('../db');
 const router = express.Router();
 
+// 학생 포털 - 발행된 회차 목록 (자가채점/조회 선택용, 로그인 불필요)
+router.get('/published-rounds', async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT er.id, er.round_label, er.exam_year, er.exam_date,
+            c.class_name, p.name AS professor_name,
+            (SELECT COUNT(*) FROM answer_keys ak WHERE ak.exam_round_id = er.id)::int AS question_count
+     FROM exam_rounds er
+     JOIN classes c ON c.id = er.class_id
+     JOIN professors p ON p.id = c.professor_id
+     WHERE er.status = 'published'
+     ORDER BY er.exam_date DESC NULLS LAST, er.id DESC`
+  );
+  res.json(rows);
+});
+
+// 자가채점용 문항 목록 (정답 제외, 문항번호/배점/파트만)
+router.get('/rounds/:id/questions', async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT question_no, point, area_tag FROM answer_keys WHERE exam_round_id=$1 ORDER BY question_no`,
+    [req.params.id]
+  );
+  res.json(rows.map(r => ({ questionNo: r.question_no, point: Number(r.point), areaTag: r.area_tag })));
+});
+
 // 학생 포털 - 무로그인 수험번호 조회 (발행된 회차만)
 router.get('/lookup', async (req, res) => {
   const { exam_no } = req.query;
