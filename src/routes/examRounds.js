@@ -128,6 +128,87 @@ router.get('/:id/results', async (req, res) => {
   res.json({ examRoundId, summary, students: rows });
 });
 
+// 통합 성적표: 여러 회차(반)를 하나로 합쳐 전체 인원 기준으로 등수·백분위를 다시 계산한다.
+// 예: 같은 시험을 여러 반이 나눠서 봤을 때, 반을 넘나드는 전체 순위를 보고 싶은 경우.
+router.get('/combined-results', async (req, res) => {
+  const ids = String(req.query.ids || '')
+    .split(',')
+    .map(s => parseInt(s.trim(), 10))
+    .filter(n => Number.isFinite(n));
+  if (ids.length === 0) {
+    return res.status(400).json({ error: 'ids 쿼리 파라미터가 필요합니다 (예: ?ids=1,2,3).' });
+  }
+
+  const { rows } = await db.query(
+    `SELECT ss.exam_round_id, ss.exam_no, ss.total_score, ss.area_scores,
+            er.round_label, er.exam_year, c.class_name, p.name AS professor_name,
+            re.real_name, re.masked_name, re.dept, re.track
+     FROM student_scores ss
+     JOIN exam_rounds er ON er.id = ss.exam_round_id
+     JOIN classes c ON c.id = er.class_id
+     JOIN professors p ON p.id = c.professor_id
+     LEFT JOIN rosters r ON r.exam_round_id = ss.exam_round_id
+     LEFT JOIN roster_entries re ON re.roster_id = r.id AND re.exam_no = ss.exam_no
+     WHERE ss.exam_round_id = ANY($1::int[])
+     ORDER BY ss.total_score DESC`,
+    [ids]
+  );
+
+  // 전체 인원 기준으로 등수(표준경쟁순위)·백분위를 다시 계산
+  const total = rows.length;
+  rows.forEach((r, idx) => {
+    if (idx === 0 || Number(r.total_score) < Number(rows[idx - 1].total_score)) {
+      r.combined_rank = idx + 1;
+    } else {
+      r.combined_rank = rows[idx - 1].combined_rank;
+    }
+  });
+  rows.forEach(r => {
+    const countLowerOrEqual = rows.filter(o => Number(o.total_score) <= Number(r.total_score)).length;
+    r.combined_percentile = total > 0 ? Math.round((countLowerOrEqual / total) * 1000) / 10 : null;
+  });
+
+  const scores = rows.map(r => Number(r.total_score));
+  const summary = {
+    studentCount: rows.length,
+    avgScore: scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null,
+    maxScore: scores.length ? Math.max(...scores) : null,
+    minScore: scores.length ? Math.min(...scores) : null,
+    unmatchedCount: rows.filter(r => !r.real_name && !r.masked_name).length,
+    isMerged: ids.length > 1
+  };
+  res.json({ examRoundIds: ids, summary, students: rows });
+});
+
+// 특정 학생의 정오표(문항별 O/X, 배점, 전체 정답률) — 관리자 성적표 화면의 상세 보기용
+router.get('/:id/students/:examNo/answers', async (req, res) => {
+  const { id, examNo } = req.params;
+  const { rows } = await db.query(
+    `SELECT ak.question_no, ak.point, ak.area_tag, ak.correct_answer, oa.student_answer, oa.is_correct,
+            stats.correct_count, stats.total_count
+     FROM answer_keys ak
+     LEFT JOIN omr_uploads ou ON ou.exam_round_id = ak.exam_round_id AND ou.status = 'done'
+     LEFT JOIN omr_answers oa ON oa.omr_upload_id = ou.id AND oa.question_no = ak.question_no AND oa.exam_no = $2
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*) FILTER (WHERE oa2.is_correct)::int AS correct_count, COUNT(*)::int AS total_count
+       FROM omr_answers oa2
+       WHERE oa2.omr_upload_id = ou.id AND oa2.question_no = ak.question_no
+     ) stats ON true
+     WHERE ak.exam_round_id = $1
+     ORDER BY ak.question_no`,
+    [id, examNo]
+  );
+  res.json(rows.map(r => ({
+    questionNo: r.question_no,
+    point: Number(r.point),
+    areaTag: r.area_tag,
+    correctAnswer: r.correct_answer,
+    studentAnswer: r.student_answer,
+    isCorrect: r.is_correct,
+    correctRate: r.total_count > 0 ? Math.round((r.correct_count / r.total_count) * 1000) / 10 : null
+  })));
+});
+
 // 문항별 정답률 통계 (문항 통계 화면용)
 router.get('/:id/question-stats', async (req, res) => {
   const examRoundId = req.params.id;

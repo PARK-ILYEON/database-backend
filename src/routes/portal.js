@@ -33,7 +33,7 @@ router.get('/lookup', async (req, res) => {
   if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
 
   const { rows } = await db.query(
-    `SELECT ss.total_score, ss.overall_rank, ss.percentile, ss.area_scores,
+    `SELECT er.id AS exam_round_id, ss.total_score, ss.overall_rank, ss.percentile, ss.area_scores,
             er.round_label, er.exam_year, er.exam_date,
             re.real_name, re.masked_name
      FROM student_scores ss
@@ -113,6 +113,40 @@ router.get('/dept-rank', async (req, res) => {
     roundLabel: r.round_label, examYear: r.exam_year, dept: r.dept,
     deptRank: r.dept_rank, deptApplicants: r.dept_applicants
   });
+});
+
+// 학생 포털 - 정오표(문항별 O/X, 발행된 회차만, 로그인 불필요)
+router.get('/rounds/:id/student-answers', async (req, res) => {
+  const { exam_no } = req.query;
+  if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
+
+  const { rows: roundRows } = await db.query(`SELECT id FROM exam_rounds WHERE id=$1 AND status='published'`, [req.params.id]);
+  if (roundRows.length === 0) return res.status(404).json({ error: '발행되지 않은 회차입니다.' });
+
+  const { rows } = await db.query(
+    `SELECT ak.question_no, ak.point, ak.area_tag, ak.correct_answer, oa.student_answer, oa.is_correct,
+            stats.correct_count, stats.total_count
+     FROM answer_keys ak
+     LEFT JOIN omr_uploads ou ON ou.exam_round_id = ak.exam_round_id AND ou.status = 'done'
+     LEFT JOIN omr_answers oa ON oa.omr_upload_id = ou.id AND oa.question_no = ak.question_no AND oa.exam_no = $2
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*) FILTER (WHERE oa2.is_correct)::int AS correct_count, COUNT(*)::int AS total_count
+       FROM omr_answers oa2
+       WHERE oa2.omr_upload_id = ou.id AND oa2.question_no = ak.question_no
+     ) stats ON true
+     WHERE ak.exam_round_id = $1
+     ORDER BY ak.question_no`,
+    [req.params.id, exam_no]
+  );
+  res.json(rows.map(r => ({
+    questionNo: r.question_no,
+    point: Number(r.point),
+    areaTag: r.area_tag,
+    correctAnswer: r.correct_answer,
+    studentAnswer: r.student_answer,
+    isCorrect: r.is_correct,
+    correctRate: r.total_count > 0 ? Math.round((r.correct_count / r.total_count) * 1000) / 10 : null
+  })));
 });
 
 // 자가채점 - 임시 수험번호 발급
