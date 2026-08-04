@@ -84,17 +84,23 @@ router.get('/dashboard-summary', async (req, res) => {
   const { rows: studentCountRows } = await db.query(
     `SELECT COUNT(DISTINCT exam_no)::int AS student_count FROM student_scores`
   );
+  // 같은 회차명(round_label)+연도를 공유하는 반들은 하나의 시험으로 보고 자동으로 묶어서 보여준다
+  // (통합성적표와 기준을 맞추기 위함 — 여러 반이 같은 시험을 나눠 본 경우 합산 인원/평균으로 표시).
   const { rows: recentRounds } = await db.query(
-    `SELECT er.id, er.round_label, er.exam_year, er.exam_date, er.status,
-            c.class_name, p.name AS professor_name,
+    `SELECT er.round_label, er.exam_year, MAX(er.exam_date) AS exam_date,
+            bool_or(er.status='published') AS any_published,
+            bool_and(er.status='published') AS all_published,
+            array_agg(er.id ORDER BY er.id)::int[] AS exam_round_ids,
+            string_agg(DISTINCT p.name || '/' || c.class_name, ', ') AS classes_label,
+            COUNT(DISTINCT er.id)::int AS class_count,
             COUNT(ss.id)::int AS student_count,
             ROUND(AVG(ss.total_score)::numeric, 1) AS avg_score
      FROM exam_rounds er
      JOIN classes c ON c.id = er.class_id
      JOIN professors p ON p.id = c.professor_id
      LEFT JOIN student_scores ss ON ss.exam_round_id = er.id
-     GROUP BY er.id, c.class_name, p.name
-     ORDER BY er.exam_date DESC NULLS LAST, er.id DESC
+     GROUP BY er.round_label, er.exam_year
+     ORDER BY MAX(er.exam_date) DESC NULLS LAST, MAX(er.id) DESC
      LIMIT 5`
   );
   res.json({
@@ -209,21 +215,35 @@ router.get('/:id/students/:examNo/answers', async (req, res) => {
   })));
 });
 
-// 문항별 정답률 통계 (문항 통계 화면용)
+// 문항별 정답률 통계 (문항 통계 화면용).
+// 같은 회차명(round_label)+연도를 공유하는 반이 있으면 자동으로 합쳐서 전체 정답률을 계산한다
+// (통합성적표와 같은 기준: 여러 반이 같은 시험을 나눠 봤으면 그 반들 전체 기준 정답률이 의미 있음).
 router.get('/:id/question-stats', async (req, res) => {
   const examRoundId = req.params.id;
+  const { rows: siblingRows } = await db.query(
+    `SELECT array_agg(er2.id ORDER BY er2.id)::int[] AS ids
+     FROM exam_rounds er1
+     JOIN exam_rounds er2 ON er2.round_label = er1.round_label AND er2.exam_year = er1.exam_year
+     WHERE er1.id = $1`,
+    [examRoundId]
+  );
+  const ids = (siblingRows[0] && siblingRows[0].ids) ? siblingRows[0].ids : [Number(examRoundId)];
+
   const { rows } = await db.query(
-    `SELECT ak.question_no, ak.correct_answer, ak.point, ak.area_tag,
+    `SELECT ak.question_no,
+            (array_agg(ak.correct_answer))[1] AS correct_answer,
+            (array_agg(ak.point))[1] AS point,
+            (array_agg(ak.area_tag))[1] AS area_tag,
             COUNT(oa.id) FILTER (WHERE oa.is_correct = true)::int AS correct_count,
             COUNT(oa.id) FILTER (WHERE oa.student_answer IS NOT NULL)::int AS answered_count,
             COUNT(oa.id)::int AS total_count
      FROM answer_keys ak
      LEFT JOIN omr_uploads ou ON ou.exam_round_id = ak.exam_round_id AND ou.status='done'
      LEFT JOIN omr_answers oa ON oa.omr_upload_id = ou.id AND oa.question_no = ak.question_no
-     WHERE ak.exam_round_id = $1
-     GROUP BY ak.question_no, ak.correct_answer, ak.point, ak.area_tag
+     WHERE ak.exam_round_id = ANY($1::int[])
+     GROUP BY ak.question_no
      ORDER BY ak.question_no`,
-    [examRoundId]
+    [ids]
   );
   const questions = rows.map(r => ({
     questionNo: r.question_no,
@@ -235,7 +255,7 @@ router.get('/:id/question-stats', async (req, res) => {
     totalCount: r.total_count,
     correctRate: r.total_count > 0 ? Math.round((r.correct_count / r.total_count) * 1000) / 10 : null
   }));
-  res.json({ examRoundId, questions });
+  res.json({ examRoundId, examRoundIds: ids, classCount: ids.length, questions });
 });
 
 // 회차 목록 (교수/연도 필터)
