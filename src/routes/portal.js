@@ -88,13 +88,27 @@ router.post('/self-quiz/submit', async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-// 자가채점 - 이전 제출 기록 재조회
+// 자가채점 - 이전 제출 기록 재조회 (일반 성적조회 화면과 같은 모양으로 반환)
 router.get('/self-quiz/:self_exam_no', async (req, res) => {
   const { rows } = await db.query(
-    'SELECT * FROM self_quiz_submissions WHERE self_exam_no=$1 ORDER BY submitted_at DESC',
+    `SELECT sq.self_exam_no, sq.name, sq.total_score, sq.area_scores, sq.submitted_at,
+            er.round_label, er.exam_year
+     FROM self_quiz_submissions sq
+     LEFT JOIN exam_rounds er ON er.id = sq.exam_round_id
+     WHERE sq.self_exam_no=$1
+     ORDER BY sq.submitted_at DESC`,
     [req.params.self_exam_no]
   );
-  res.json(rows);
+  res.json(rows.map(r => ({
+    exam_year: r.exam_year,
+    round_label: r.round_label || '(자가채점)',
+    total_score: r.total_score,
+    overall_rank: null,
+    percentile: null,
+    area_scores: r.area_scores,
+    real_name: r.name,
+    masked_name: null
+  })));
 });
 
 module.exports = router;
