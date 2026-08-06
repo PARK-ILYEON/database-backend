@@ -29,10 +29,19 @@ router.post('/', async (req, res) => {
 // FK 관계(academies→professors→classes→exam_rounds)를 매번 관리자가 직접 ID로 다루지 않도록
 // 화면에서 이름만 입력받아 쓰는 용도.
 router.post('/quick-create', async (req, res) => {
-  const { academy_name, professor_name, class_name, round_label, exam_year, exam_date } = req.body;
-  if (!academy_name || !professor_name || !class_name || !round_label || !exam_year) {
-    return res.status(400).json({ error: 'academy_name, professor_name, class_name, round_label, exam_year는 필수입니다.' });
-  }
+  // 모든 항목이 비어 있어도 회차가 만들어지도록, 빈 값은 "미지정"/현재 연도 등으로 채워서 진행한다.
+  const DEFAULT_TEXT = '미지정';
+  const body = req.body || {};
+  const academy_name = (body.academy_name && String(body.academy_name).trim()) || DEFAULT_TEXT;
+  const professor_name = (body.professor_name && String(body.professor_name).trim()) || DEFAULT_TEXT;
+  const class_name = (body.class_name && String(body.class_name).trim()) || DEFAULT_TEXT;
+  const round_label = (body.round_label && String(body.round_label).trim()) || DEFAULT_TEXT;
+  const exam_date = (body.exam_date && String(body.exam_date).trim()) || null;
+  const parsedYear = Number(body.exam_year);
+  const exam_year = Number.isFinite(parsedYear) && parsedYear
+    ? parsedYear
+    : (exam_date ? new Date(exam_date).getFullYear() : new Date().getFullYear());
+
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
@@ -59,7 +68,7 @@ router.post('/quick-create', async (req, res) => {
     const { rows: roundRows } = await client.query(
       `INSERT INTO exam_rounds (class_id, round_label, exam_year, exam_date, status)
        VALUES ($1,$2,$3,$4,'draft') RETURNING *`,
-      [classId, round_label, exam_year, exam_date || null]
+      [classId, round_label, exam_year, exam_date]
     );
 
     await client.query('COMMIT');
@@ -277,10 +286,11 @@ router.get('/', async (req, res) => {
   const { professor, year } = req.query;
   const conditions = [];
   const params = [];
-  let sql = `SELECT er.*, c.class_name, p.name AS professor_name
+  let sql = `SELECT er.*, c.class_name, p.name AS professor_name, a.name AS academy_name
              FROM exam_rounds er
              JOIN classes c ON c.id = er.class_id
-             JOIN professors p ON p.id = c.professor_id`;
+             JOIN professors p ON p.id = c.professor_id
+             JOIN academies a ON a.id = c.academy_id`;
   if (professor) { params.push(professor); conditions.push(`p.name = $${params.length}`); }
   if (year) { params.push(Number(year)); conditions.push(`er.exam_year = $${params.length}`); }
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');

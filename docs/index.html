@@ -143,7 +143,7 @@ var state = {
   liveMessageType: 'info', // info | error | ok
   liveRounds: [],
   liveRoundsLoaded: false,
-  liveNewRound: { academy_name:'', professor_name:'', class_name:'', round_label:'', exam_year: new Date().getFullYear() },
+  liveNewRound: { exam_date:'', professor_name:'', class_name:'', round_label:'', academy_name:'' },
   liveExpandedRoundId: null,
 
   // ---- 실제 연동 2단계: 성적표/학생관리/대시보드/문항통계/대학DB ----
@@ -823,13 +823,13 @@ function renderLiveLogin(){
 function renderLiveNewRoundForm(){
   var f = state.liveNewRound;
   var html = '<div class="card"><h3>새 회차 만들기</h3>';
-  html += '<div class="note">지점·교수·반 이름은 처음 쓰는 이름이면 자동으로 새로 만들어지고, 이미 있으면 그대로 재사용됩니다.</div>';
+  html += '<div class="note">전부 비워둬도 회차는 생성됩니다(빈 항목은 "미지정"으로 채워짐). 대학·교수·반 이름은 처음 쓰는 이름이면 자동으로 새로 만들어지고, 이미 있으면 그대로 재사용됩니다.</div>';
   html += '<div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">';
-  html += liveInput('liveNewAcademy', '지점 (예: 강남단과)', f.academy_name);
+  html += liveInput('liveNewDate', '날짜 (예: 260806)', f.exam_date);
   html += liveInput('liveNewProfessor', '교수명 (예: 정병권)', f.professor_name);
   html += liveInput('liveNewClass', '반 이름 (예: P)', f.class_name);
-  html += liveInput('liveNewRoundLabel', '회차명 (예: 13회차)', f.round_label);
-  html += liveInput('liveNewYear', '연도', f.exam_year);
+  html += liveInput('liveNewRoundLabel', '회차 (예: 13회차)', f.round_label);
+  html += liveInput('liveNewAcademy', '대학명 (예: 한양대)', f.academy_name);
   html += '</div>';
   html += '<button class="btn" data-act="liveCreateRound" '+(state.liveLoading?'disabled':'')+'>회차 생성</button>';
   html += '</div>';
@@ -850,7 +850,7 @@ function renderLiveRoundsList(){
     html += '<div class="empty">아직 생성된 회차가 없습니다. 위에서 새 회차를 만들어보세요.</div></div>';
     return html;
   }
-  html += '<div class="table-wrap"><table><thead><tr><th></th><th>ID</th><th>지점</th><th>교수/반</th><th>회차</th><th>연도</th><th>상태</th></tr></thead><tbody>';
+  html += '<div class="table-wrap"><table><thead><tr><th></th><th>ID</th><th>대학명</th><th>교수/반</th><th>회차</th><th>연도</th><th>상태</th></tr></thead><tbody>';
   state.liveRounds.forEach(function(r){
     var expanded = state.liveExpandedRoundId === r.id;
     html += '<tr data-act="liveToggleRound" data-id="'+r.id+'" style="cursor:pointer">'
@@ -1211,17 +1211,19 @@ document.addEventListener('click', function(e){
     setState({liveToken:null, liveAdmin:null, liveRounds:[], liveRoundsLoaded:false, liveMessage:'', liveExpandedRoundId:null});
   }
   else if (act==='liveCreateRound'){
+    // 날짜는 YYMMDD(예: 260806) 형식일 때만 실제 날짜로 변환하고, 그 외에는 그냥 비워둔다 (서버가 현재 연도로 채움).
+    var dateRaw = $('#liveNewDate').value.trim();
+    var examDate = null;
+    if (/^\d{6}$/.test(dateRaw)){
+      examDate = '20'+dateRaw.slice(0,2)+'-'+dateRaw.slice(2,4)+'-'+dateRaw.slice(4,6);
+    }
     var payload = {
-      academy_name: $('#liveNewAcademy').value.trim(),
+      exam_date: examDate,
       professor_name: $('#liveNewProfessor').value.trim(),
       class_name: $('#liveNewClass').value.trim(),
       round_label: $('#liveNewRoundLabel').value.trim(),
-      exam_year: parseInt($('#liveNewYear').value, 10)
+      academy_name: $('#liveNewAcademy').value.trim()
     };
-    if (!payload.academy_name || !payload.professor_name || !payload.class_name || !payload.round_label || !payload.exam_year){
-      setState({liveMessage:'모든 항목을 입력해주세요.', liveMessageType:'error'});
-      return;
-    }
     setState({liveLoading:true});
     apiQuickCreateRound(payload).then(function(round){
       return apiListExamRounds().then(function(list){
