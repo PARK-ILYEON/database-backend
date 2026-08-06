@@ -123,6 +123,43 @@ router.get('/dept-rank', async (req, res) => {
   });
 });
 
+// 학생 포털 - 특정 회차 기준 학과별/계열별 석차 (통합성적표처럼 같은 회차명+연도를 공유하는
+// 반이 여러 개면 그 전체를 합친 인원 기준으로 계산한다. 명단이 여러 번 올라간 반이 있어도
+// 항상 가장 최근 명단 하나만 사용한다.)
+router.get('/rounds/:id/dept-track-rank', async (req, res) => {
+  const { exam_no } = req.query;
+  if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
+
+  const { rows } = await db.query(
+    `SELECT ss.exam_no, ss.total_score, re.dept, re.track
+     FROM student_scores ss
+     JOIN exam_rounds er ON er.id = ss.exam_round_id
+     JOIN exam_rounds er0 ON er0.id = $1
+     LEFT JOIN LATERAL (
+       SELECT id FROM rosters r2 WHERE r2.exam_round_id = ss.exam_round_id ORDER BY r2.uploaded_at DESC, r2.id DESC LIMIT 1
+     ) ros ON true
+     LEFT JOIN roster_entries re ON re.roster_id = ros.id AND re.exam_no = ss.exam_no
+     WHERE er.round_label = er0.round_label AND er.exam_year = er0.exam_year`,
+    [req.params.id]
+  );
+
+  const target = rows.find(r => r.exam_no === exam_no);
+  if (!target) return res.json(null);
+
+  const result = { dept: target.dept || null, track: target.track || null };
+  if (target.dept) {
+    const peers = rows.filter(r => r.dept === target.dept);
+    result.deptRank = peers.filter(r => Number(r.total_score) > Number(target.total_score)).length + 1;
+    result.deptApplicants = peers.length;
+  }
+  if (target.track) {
+    const peers = rows.filter(r => r.track === target.track);
+    result.trackRank = peers.filter(r => Number(r.total_score) > Number(target.total_score)).length + 1;
+    result.trackApplicants = peers.length;
+  }
+  res.json(result);
+});
+
 // 학생 포털 - 정오표(문항별 O/X, 발행된 회차만, 로그인 불필요)
 router.get('/rounds/:id/student-answers', async (req, res) => {
   const { exam_no } = req.query;

@@ -184,6 +184,7 @@ var state = {
 
   pvSubtab: 'report', // report | wrong | univ | trend
   pvReportRoundId: null,
+  pvDeptTrackRankCache: {},
   pvWrong: null,
   pvDeptRank: null,
   pvUnivMatches: null,
@@ -324,6 +325,21 @@ function apiPortalWrongQuestions(examNo){
 }
 function apiPortalDeptRank(examNo){
   return apiFetch('/api/portal/dept-rank?exam_no=' + encodeURIComponent(examNo));
+}
+function apiPortalDeptTrackRank(examRoundId, examNo){
+  return apiFetch('/api/portal/rounds/' + examRoundId + '/dept-track-rank?exam_no=' + encodeURIComponent(examNo));
+}
+function fetchPvDeptTrackRank(roundId){
+  if (!roundId || state.pvDeptTrackRankCache[roundId] !== undefined) return;
+  apiPortalDeptTrackRank(roundId, state.pvExamNo).then(function(d){
+    var cache = Object.assign({}, state.pvDeptTrackRankCache);
+    cache[roundId] = d || false;
+    setState({pvDeptTrackRankCache: cache});
+  }).catch(function(err){
+    var cache = Object.assign({}, state.pvDeptTrackRankCache);
+    cache[roundId] = false;
+    setState({pvDeptTrackRankCache: cache});
+  });
 }
 function apiPortalStudentAnswers(examRoundId, examNo){
   return apiFetch('/api/portal/rounds/'+examRoundId+'/student-answers?exam_no='+encodeURIComponent(examNo));
@@ -954,6 +970,26 @@ function renderWrongByArea(answers){
   return html;
 }
 
+function renderDeptTrackRank(info){
+  var html = '<div class="card"><h3>학과별·계열별 석차 (같은 회차명을 공유하는 통합성적표 기준)</h3>';
+  if (info===undefined){
+    html += '<div class="empty">불러오는 중입니다...</div></div>';
+    return html;
+  }
+  if (!info || (!info.dept && !info.track)){
+    html += '<div class="empty">지망학과/계열 정보가 없어 석차를 계산할 수 없습니다.</div></div>';
+    return html;
+  }
+  html += '<div class="scorebig">';
+  if (info.dept){
+    html += '<div class="item"><div class="num">'+(info.deptRank||'-')+' / '+(info.deptApplicants||'-')+'</div><div class="lab">학과 내 석차 ('+esc(info.dept)+')</div></div>';
+  }
+  if (info.track){
+    html += '<div class="item"><div class="num">'+(info.trackRank||'-')+' / '+(info.trackApplicants||'-')+'</div><div class="lab">계열 내 석차 ('+esc(info.track)+')</div></div>';
+  }
+  html += '</div></div>';
+  return html;
+}
 // 여러 회차 중 하나를 선택해서 그 회차의 성적표만 보여준다 (탭처럼 회차 버튼으로 전환)
 function renderPvReportTab(rows){
   if (!rows || rows.length===0){
@@ -986,6 +1022,7 @@ function renderPvReportTab(rows){
     + '</div></div>';
 
   html += renderAreaScoreBars(areaScores);
+  html += renderDeptTrackRank(state.pvDeptTrackRankCache[r.exam_round_id]);
   if (r.exam_round_id){
     html += '<div class="card"><button class="btn secondary" data-act="pvToggleAnswers" data-round-id="'+r.exam_round_id+'">'
       + (state.pvExpandedAnswersRoundId===r.exam_round_id ? '정오표 닫기' : '정오표 보기') + '</button>';
@@ -1401,6 +1438,9 @@ document.addEventListener('click', function(e){
     var pvLookupFn = /^SELF/i.test(pvNo) ? apiPortalSelfHistory(pvNo) : apiPortalLookup(pvNo);
     pvLookupFn.then(function(rows){
       setState({pvLoading:false, pvStage:'lookup', pvLookupResults:rows});
+      if (rows && rows.length){
+        fetchPvDeptTrackRank(rows[rows.length-1].exam_round_id);
+      }
     }).catch(function(err){
       setState({pvLoading:false, pvError:err.message});
     });
@@ -1409,7 +1449,7 @@ document.addEventListener('click', function(e){
     setState({
       pvStage:'entry', pvExamNo:'', pvLookupResults:null, pvError:'',
       pvSelfName:'', pvSelfExamNo:null, pvSelfRoundId:null, pvSelfQuestions:null, pvSelfAnswers:{}, pvSelfResult:null,
-      pvSubtab:'report', pvReportRoundId:null, pvWrong:null, pvDeptRank:null, pvUnivMatches:null
+      pvSubtab:'report', pvReportRoundId:null, pvWrong:null, pvDeptRank:null, pvUnivMatches:null, pvDeptTrackRankCache:{}
     });
   }
   else if (act==='pvToggleAnswers'){
@@ -1430,7 +1470,9 @@ document.addEventListener('click', function(e){
     }
   }
   else if (act==='pvSelectReportRound'){
-    setState({pvReportRoundId: parseInt(el.getAttribute('data-round-id'),10)});
+    var pvSelRoundId = parseInt(el.getAttribute('data-round-id'),10);
+    setState({pvReportRoundId: pvSelRoundId});
+    fetchPvDeptTrackRank(pvSelRoundId);
   }
   else if (act==='pvSetSub'){
     var pvSub = el.getAttribute('data-sub');
