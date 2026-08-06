@@ -293,7 +293,8 @@ router.get('/', async (req, res) => {
 router.post('/:id/answer-key-upload', upload.single('file'), async (req, res) => {
   const examRoundId = req.params.id;
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
-  const sheetIndex = req.body.sheetIndex !== undefined ? Number(req.body.sheetIndex) : 2;
+  const parsedSheetIndex = Number(req.body.sheetIndex);
+  const sheetIndex = req.body.sheetIndex !== undefined && Number.isFinite(parsedSheetIndex) ? parsedSheetIndex : 2;
 
   let entries;
   try {
@@ -329,7 +330,8 @@ router.post('/:id/answer-key-upload', upload.single('file'), async (req, res) =>
 router.post('/:id/roster-upload', upload.single('file'), async (req, res) => {
   const examRoundId = req.params.id;
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
-  const sheetIndex = req.body.sheetIndex !== undefined ? Number(req.body.sheetIndex) : 0;
+  const parsedRosterSheetIndex = Number(req.body.sheetIndex);
+  const sheetIndex = req.body.sheetIndex !== undefined && Number.isFinite(parsedRosterSheetIndex) ? parsedRosterSheetIndex : 0;
 
   let students;
   try {
