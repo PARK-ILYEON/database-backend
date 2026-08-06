@@ -182,6 +182,7 @@ var state = {
   pvSelfResult: null,
 
   pvSubtab: 'report', // report | wrong | univ | trend
+  pvReportRoundId: null,
   pvWrong: null,
   pvDeptRank: null,
   pvUnivMatches: null,
@@ -483,7 +484,7 @@ function renderLiveResultsTab(){
           + '<td><button class="btn secondary" data-act="liveToggleUnivMatch" data-round-id="'+st.exam_round_id+'" data-exam-no="'+esc(st.exam_no)+'" style="font-size:11px;padding:4px 8px">'+(univExpanded?'닫기':'매칭보기')+'</button></td>'
           + '</tr>';
         if (expanded){
-          html += '<tr><td colspan="9" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderScoreDetailForKey(key, st, rank, pct) + renderOxGridForKey(key) + '</div></td></tr>';
+          html += '<tr><td colspan="9" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderScoreDetailForKey(key, st, rank, pct) + renderWrongByArea(state.liveStudentAnswersCache[key]) + renderOxGridForKey(key) + '</div></td></tr>';
         }
         if (univExpanded){
           html += '<tr><td colspan="9" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderUnivMatchForKey(key, st) + '</div></td></tr>';
@@ -880,7 +881,7 @@ function renderPortalLiveLookup(){
   }
 
   html += '<div class="subtabs">';
-  [['report','성적표'],['wrong','오답노트'],['univ','대학 매칭'],['trend','역대 성적 비교']].forEach(function(t){
+  [['report','성적표'],['wrong','누적오답노트'],['univ','대학 매칭'],['trend','역대 성적 비교']].forEach(function(t){
     html += '<button data-act="pvSetSub" data-sub="'+t[0]+'" class="'+(state.pvSubtab===t[0]?'active':'')+'">'+t[1]+'</button>';
   });
   html += '</div>';
@@ -892,38 +893,78 @@ function renderPortalLiveLookup(){
   return html;
 }
 
-function renderPvReportTab(rows){
-  var html = '';
-  rows.forEach(function(r){
-    var name = r.real_name || r.masked_name || '-';
-    var areaScores = r.area_scores;
-    try { if (typeof areaScores==='string') areaScores = JSON.parse(areaScores); } catch(err){ areaScores = {}; }
-    areaScores = areaScores || {};
-
-    html += '<div class="card">';
-    html += '<h3>'+esc(r.exam_year)+' · '+esc(r.round_label)+' <span style="font-weight:400;color:var(--muted);font-size:13px">('+esc(name)+')</span></h3>';
-    html += '<div class="scorebig">'
-      + '<div class="item"><div class="num">'+r.total_score+'</div><div class="lab">총점</div></div>'
-      + '<div class="item"><div class="num">'+(r.percentile!==null?r.percentile+'%':'-')+'</div><div class="lab">백분위</div></div>'
-      + '<div class="item"><div class="num">'+(r.overall_rank!==null&&r.overall_rank!==undefined?r.overall_rank:'-')+'</div><div class="lab">전체 석차</div></div>'
-      + '</div>';
-
-    html += renderAreaScoreBars(areaScores);
-    if (r.exam_round_id){
-      html += '<div style="margin-top:10px"><button class="btn secondary" data-act="pvToggleAnswers" data-round-id="'+r.exam_round_id+'">'
-        + (state.pvExpandedAnswersRoundId===r.exam_round_id ? '정오표 닫기' : '정오표 보기') + '</button></div>';
-      if (state.pvExpandedAnswersRoundId===r.exam_round_id){
-        var pvAns = state.pvAnswersCache[r.exam_round_id];
-        html += '<div style="margin-top:10px">' + (pvAns ? renderOxGrid(pvAns) : '<div class="empty">불러오는 중입니다...</div>') + '</div>';
-      }
+// 오답을 영역별로 집계해서 보여준다 (정오표 데이터가 준비된 경우에만)
+function renderWrongByArea(answers){
+  if (!answers || answers.length===0) return '';
+  var counts = {};
+  var order = [];
+  answers.forEach(function(q){
+    if (q.isCorrect===false){
+      var tag = q.areaTag || '기타';
+      if (!counts[tag]){ counts[tag]=0; order.push(tag); }
+      counts[tag] += 1;
     }
-    html += '</div>';
   });
+  if (order.length===0) return '<div class="card"><h3>오답 영역별 분포</h3><div class="empty">오답이 없습니다.</div></div>';
+  var html = '<div class="card"><h3>오답 영역별 분포</h3><div class="metabar">';
+  order.forEach(function(tag){
+    html += '<span><span class="pill '+pillClassForArea(tag)+'">'+esc(tag)+'</span> '+counts[tag]+'개</span>';
+  });
+  html += '</div></div>';
+  return html;
+}
+
+// 여러 회차 중 하나를 선택해서 그 회차의 성적표만 보여준다 (탭처럼 회차 버튼으로 전환)
+function renderPvReportTab(rows){
+  if (!rows || rows.length===0){
+    return '<div class="card"><div class="empty">조회된 성적표가 없습니다.</div></div>';
+  }
+  var selectedId = state.pvReportRoundId;
+  if (!selectedId || !rows.some(function(r){ return r.exam_round_id===selectedId; })){
+    selectedId = rows[rows.length-1].exam_round_id; // rows는 exam_date ASC 정렬 — 마지막이 최신 회차
+  }
+  var html = '';
+  if (rows.length > 1){
+    html += '<div class="univ-tabs">';
+    rows.forEach(function(r){
+      html += '<button data-act="pvSelectReportRound" data-round-id="'+r.exam_round_id+'" class="'+(selectedId===r.exam_round_id?'active':'')+'">'+esc(r.exam_year)+' '+esc(r.round_label)+'</button>';
+    });
+    html += '</div>';
+  }
+  var r = rows.filter(function(x){ return x.exam_round_id===selectedId; })[0];
+  var name = r.real_name || r.masked_name || '-';
+  var areaScores = r.area_scores;
+  try { if (typeof areaScores==='string') areaScores = JSON.parse(areaScores); } catch(err){ areaScores = {}; }
+  areaScores = areaScores || {};
+
+  html += '<div class="card">';
+  html += '<h3>'+esc(r.exam_year)+' · '+esc(r.round_label)+' <span style="font-weight:400;color:var(--muted);font-size:13px">('+esc(name)+')</span></h3>';
+  html += '<div class="scorebig">'
+    + '<div class="item"><div class="num">'+r.total_score+'</div><div class="lab">총점</div></div>'
+    + '<div class="item"><div class="num">'+(r.percentile!==null?r.percentile+'%':'-')+'</div><div class="lab">백분위</div></div>'
+    + '<div class="item"><div class="num">'+(r.overall_rank!==null&&r.overall_rank!==undefined?r.overall_rank:'-')+'</div><div class="lab">전체 석차</div></div>'
+    + '</div></div>';
+
+  html += renderAreaScoreBars(areaScores);
+  if (r.exam_round_id){
+    html += '<div class="card"><button class="btn secondary" data-act="pvToggleAnswers" data-round-id="'+r.exam_round_id+'">'
+      + (state.pvExpandedAnswersRoundId===r.exam_round_id ? '정오표 닫기' : '정오표 보기') + '</button>';
+    if (state.pvExpandedAnswersRoundId===r.exam_round_id){
+      var pvAns = state.pvAnswersCache[r.exam_round_id];
+      if (!pvAns){
+        html += '<div style="margin-top:10px">불러오는 중입니다...</div></div>';
+      } else {
+        html += '</div>' + renderWrongByArea(pvAns) + '<div class="card">' + renderOxGrid(pvAns) + '</div>';
+      }
+    } else {
+      html += '</div>';
+    }
+  }
   return html;
 }
 
 function renderPvWrongTab(){
-  var html = '<div class="card"><h3>오답노트 (누적 회차 · 오답률 상위 5문항)</h3>';
+  var html = '<div class="card"><h3>누적오답노트 (누적 회차 · 오답률 상위 5문항)</h3>';
   if (state.pvWrong===null){
     html += '<div class="empty">불러오는 중입니다...</div></div>';
     return html;
@@ -1325,7 +1366,7 @@ document.addEventListener('click', function(e){
     setState({
       pvStage:'entry', pvExamNo:'', pvLookupResults:null, pvError:'',
       pvSelfName:'', pvSelfExamNo:null, pvSelfRoundId:null, pvSelfQuestions:null, pvSelfAnswers:{}, pvSelfResult:null,
-      pvSubtab:'report', pvWrong:null, pvDeptRank:null, pvUnivMatches:null
+      pvSubtab:'report', pvReportRoundId:null, pvWrong:null, pvDeptRank:null, pvUnivMatches:null
     });
   }
   else if (act==='pvToggleAnswers'){
@@ -1344,6 +1385,9 @@ document.addEventListener('click', function(e){
         setState({pvError: err.message});
       });
     }
+  }
+  else if (act==='pvSelectReportRound'){
+    setState({pvReportRoundId: parseInt(el.getAttribute('data-round-id'),10)});
   }
   else if (act==='pvSetSub'){
     var pvSub = el.getAttribute('data-sub');
