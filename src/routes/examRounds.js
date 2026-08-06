@@ -3,8 +3,8 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('../db');
 const { parseOmrFile } = require('../parsers/omrParser');
-const { parseAnswerKeySheet } = require('../parsers/answerKeyParser');
-const { parseRosterSheet, maskName } = require('../parsers/rosterParser');
+const { parseAnswerKeySheet, parseAnswerKeyWorkbook } = require('../parsers/answerKeyParser');
+const { parseRosterSheet, parseRosterWorkbook, maskName } = require('../parsers/rosterParser');
 const { readWorkbookRobust } = require('../parsers/normalizeXlsx');
 const { runScoringPipeline } = require('../services/scoring');
 
@@ -293,13 +293,16 @@ router.get('/', async (req, res) => {
 router.post('/:id/answer-key-upload', upload.single('file'), async (req, res) => {
   const examRoundId = req.params.id;
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
-  const parsedSheetIndex = Number(req.body.sheetIndex);
-  const sheetIndex = req.body.sheetIndex !== undefined && Number.isFinite(parsedSheetIndex) ? parsedSheetIndex : 2;
+  // sheetIndex를 명시적으로 지정한 경우에만 그 시트를 강제로 사용하고,
+  // 지정하지 않으면 워크북의 모든 시트를 자동으로 훑어서 정답지 형식을 인식하는 시트를 찾는다.
+  const rawSheetIndex = req.body.sheetIndex;
+  const parsedSheetIndex = Number(rawSheetIndex);
+  const hasExplicitSheetIndex = rawSheetIndex !== undefined && String(rawSheetIndex).trim() !== '' && Number.isFinite(parsedSheetIndex);
 
   let entries;
   try {
     const wb = readWorkbookRobust(req.file.buffer);
-    entries = parseAnswerKeySheet(wb, sheetIndex);
+    entries = hasExplicitSheetIndex ? parseAnswerKeySheet(wb, parsedSheetIndex) : parseAnswerKeyWorkbook(wb);
   } catch (err) {
     return res.status(422).json({ error: '정답지 파싱 실패: ' + err.message });
   }
@@ -330,13 +333,16 @@ router.post('/:id/answer-key-upload', upload.single('file'), async (req, res) =>
 router.post('/:id/roster-upload', upload.single('file'), async (req, res) => {
   const examRoundId = req.params.id;
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
-  const parsedRosterSheetIndex = Number(req.body.sheetIndex);
-  const sheetIndex = req.body.sheetIndex !== undefined && Number.isFinite(parsedRosterSheetIndex) ? parsedRosterSheetIndex : 0;
+  // sheetIndex를 명시적으로 지정한 경우에만 그 시트를 강제로 사용하고,
+  // 지정하지 않으면 워크북의 모든 시트를 자동으로 훑어서 명단 형식을 인식하는 시트를 찾는다.
+  const rawRosterSheetIndex = req.body.sheetIndex;
+  const parsedRosterSheetIndex = Number(rawRosterSheetIndex);
+  const hasExplicitRosterSheetIndex = rawRosterSheetIndex !== undefined && String(rawRosterSheetIndex).trim() !== '' && Number.isFinite(parsedRosterSheetIndex);
 
   let students;
   try {
     const wb = readWorkbookRobust(req.file.buffer);
-    ({ students } = parseRosterSheet(wb, sheetIndex));
+    ({ students } = hasExplicitRosterSheetIndex ? parseRosterSheet(wb, parsedRosterSheetIndex) : parseRosterWorkbook(wb));
   } catch (err) {
     return res.status(422).json({ error: '명단 파싱 실패: ' + err.message });
   }

@@ -97,4 +97,26 @@ function parseAnswerKeySheet(workbook, sheetRef) {
   return parseAnswerKeyRows(rows);
 }
 
-module.exports = { parseAnswerKeySheet, parseAnswerKeyRows, findLabelCell };
+/**
+ * 시트 번호를 지정하지 않고, 워크북의 모든 시트를 순서대로 시도해 정답지 형식(문항번호/배점/정답 라벨)을
+ * 인식하는 첫 시트를 사용한다. 사용자가 여러 시트가 섞인 파일을 올려도 어느 시트인지 직접 몰라도 된다.
+ * @param {XLSX.WorkBook} workbook
+ */
+function parseAnswerKeyWorkbook(workbook) {
+  const errors = [];
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+    try {
+      const entries = parseAnswerKeyRows(rows);
+      if (entries.length > 0) return entries;
+      errors.push(`[${sheetName}] 라벨은 찾았지만 유효한 문항이 없습니다.`);
+    } catch (err) {
+      errors.push(`[${sheetName}] ${err.message}`);
+    }
+  }
+  throw new Error('워크북의 어느 시트에서도 정답지 형식을 인식하지 못했습니다. (' + errors.join(' / ') + ')');
+}
+
+module.exports = { parseAnswerKeySheet, parseAnswerKeyWorkbook, parseAnswerKeyRows, findLabelCell };

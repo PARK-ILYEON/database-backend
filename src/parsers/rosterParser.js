@@ -87,6 +87,28 @@ function parseRosterSheet(workbook, sheetRef) {
   return parseRosterRows(rows);
 }
 
+/**
+ * 시트 번호를 지정하지 않고, 워크북의 모든 시트를 순서대로 시도해 명단 형식("수험번호" 라벨 포함)을
+ * 인식하는 첫 시트를 사용한다. 정답지/명단이 한 워크북에 같이 있어도 자동으로 올바른 시트를 찾는다.
+ * @param {XLSX.WorkBook} workbook
+ */
+function parseRosterWorkbook(workbook) {
+  const errors = [];
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+    try {
+      const result = parseRosterRows(rows);
+      if (result.students.length > 0) return result;
+      errors.push(`[${sheetName}] 라벨은 찾았지만 학생 데이터가 없습니다.`);
+    } catch (err) {
+      errors.push(`[${sheetName}] ${err.message}`);
+    }
+  }
+  throw new Error('워크북의 어느 시트에서도 명단 형식을 인식하지 못했습니다. (' + errors.join(' / ') + ')');
+}
+
 /** 실명에서 "성 + OO" 마스킹 이름을 생성한다 (파일에 이미 있으면 그 값을 우선 사용). */
 function maskName(realName) {
   if (!realName) return null;
@@ -94,4 +116,4 @@ function maskName(realName) {
   return surname ? `${surname}OO` : null;
 }
 
-module.exports = { parseRosterSheet, parseRosterRows, maskName };
+module.exports = { parseRosterSheet, parseRosterWorkbook, parseRosterRows, maskName };

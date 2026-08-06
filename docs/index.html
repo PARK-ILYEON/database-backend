@@ -870,13 +870,11 @@ function renderLiveRoundDetail(r){
   html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">';
 
   html += '<div><div style="font-weight:700;margin-bottom:6px">1. 정답지 업로드</div>'
-    + '<div class="note" style="margin-bottom:8px">엑셀의 몇 번째 시트가 정답지인지(0부터 시작) 입력 후 파일을 선택하세요. 기본값 2 (3번째 시트).</div>'
-    + liveInput('liveAnswerSheetIdx_'+r.id, '시트 번호 (기본 2)', '2')
+    + '<div class="note" style="margin-bottom:8px">파일 안의 시트를 자동으로 인식합니다. 시트 구분 없이 파일만 선택하세요.</div>'
     + '<input type="file" data-upload="answerKey" data-round-id="'+r.id+'" accept=".xlsx" style="margin-top:8px;display:block"/></div>';
 
   html += '<div><div style="font-weight:700;margin-bottom:6px">2. 수강생 명단 업로드</div>'
-    + '<div class="note" style="margin-bottom:8px">몇 번째 시트가 명단인지(0부터 시작). 기본값 0 (1번째 시트).</div>'
-    + liveInput('liveRosterSheetIdx_'+r.id, '시트 번호 (기본 0)', '0')
+    + '<div class="note" style="margin-bottom:8px">파일 안의 시트를 자동으로 인식합니다. 시트 구분 없이 파일만 선택하세요.</div>'
     + '<input type="file" data-upload="roster" data-round-id="'+r.id+'" accept=".xlsx" style="margin-top:8px;display:block"/></div>';
 
   html += '<div><div style="font-weight:700;margin-bottom:6px">3. OMR 리딩결과 업로드</div>'
@@ -1555,15 +1553,7 @@ document.addEventListener('change', function(e){
   var roundId = el.getAttribute('data-round-id');
   var file = el.files && el.files[0];
   if (!file) return;
-  var extra = {};
-  if (kind==='answerKey'){
-    var idxEl = document.getElementById('liveAnswerSheetIdx_'+roundId);
-    extra.sheetIndex = idxEl ? idxEl.value : '2';
-  }
-  if (kind==='roster'){
-    var idxEl2 = document.getElementById('liveRosterSheetIdx_'+roundId);
-    extra.sheetIndex = idxEl2 ? idxEl2.value : '0';
-  }
+  var extra = {}; // 정답지/명단은 시트를 서버가 자동 인식하므로 sheetIndex를 보내지 않음
   setState({liveLoading:true, liveMessage:'업로드 중... ('+file.name+')', liveMessageType:'info'});
   apiUploadFile(roundId, kind, file, extra).then(function(result){
     var msg = '';
