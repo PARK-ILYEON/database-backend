@@ -163,6 +163,9 @@ var state = {
   liveUnivSearch: '',
   liveUnivUploadYear: new Date().getFullYear(),
   liveUnivUploadSheetIdx: '0',
+  liveUnivEditId: null,
+  liveExpandedUnivKey: null,
+  liveUnivMatchCache: {},
 
   // ---- 실제 연동 3단계: 학생 포털(실제) ----
   pvStage: 'entry', // entry | lookup | self
@@ -285,6 +288,15 @@ function apiUploadUnivBulk(file, year, sheetIndex){
   fd.append('year', year);
   if (sheetIndex!==undefined && sheetIndex!==null) fd.append('sheetIndex', sheetIndex);
   return apiFetch('/api/university-master/bulk-upload', { method:'POST', body: fd });
+}
+function apiUnivMasterAdd(payload){
+  return apiFetch('/api/university-master', { method:'POST', body: JSON.stringify(payload) });
+}
+function apiUnivMasterUpdate(id, payload){
+  return apiFetch('/api/university-master/'+id, { method:'PUT', body: JSON.stringify(payload) });
+}
+function apiUnivMasterDelete(id){
+  return apiFetch('/api/university-master/'+id, { method:'DELETE' });
 }
 // ---- 학생 포털(실제, 로그인 불필요) ----
 function apiPortalLookup(examNo){
@@ -448,7 +460,7 @@ function renderLiveResultsTab(){
     if (res.students.length===0){
       html += '<div class="card"><div class="empty">아직 채점된 결과가 없습니다.</div></div>';
     } else {
-      html += '<div class="card table-wrap"><table><thead><tr><th></th><th>석차</th><th>수험번호</th><th>이름</th><th>반</th><th>총점</th><th>백분위</th><th>영역별</th></tr></thead><tbody>';
+      html += '<div class="card table-wrap"><table><thead><tr><th></th><th>석차</th><th>수험번호</th><th>이름</th><th>반</th><th>총점</th><th>백분위</th><th>영역별</th><th>대학매칭</th></tr></thead><tbody>';
       res.students.forEach(function(st){
         var name = state.liveResultsNameVisible
           ? (st.real_name || st.masked_name || '<span style="color:var(--muted)">(명단 없음)</span>')
@@ -462,12 +474,19 @@ function renderLiveResultsTab(){
         var pct = st.combined_percentile!==undefined ? st.combined_percentile : st.percentile;
         var key = st.exam_round_id+'|'+st.exam_no;
         var expanded = state.liveExpandedStudentKey === key;
-        html += '<tr data-act="liveToggleStudentAnswers" data-round-id="'+st.exam_round_id+'" data-exam-no="'+esc(st.exam_no)+'" style="cursor:pointer">'
-          + '<td>'+(expanded?'▼':'▶')+'</td><td>'+(rank||'-')+'</td><td>'+esc(st.exam_no)+'</td><td>'+name+'</td>'
+        var univExpanded = state.liveExpandedUnivKey === key;
+        html += '<tr>'
+          + '<td data-act="liveToggleStudentAnswers" data-round-id="'+st.exam_round_id+'" data-exam-no="'+esc(st.exam_no)+'" style="cursor:pointer">'+(expanded?'▼':'▶')+'</td>'
+          + '<td>'+(rank||'-')+'</td><td>'+esc(st.exam_no)+'</td><td>'+name+'</td>'
           + '<td>'+esc(st.class_name||'-')+'</td>'
-          + '<td>'+st.total_score+'</td><td>'+(pct!==null&&pct!==undefined?pct+'%':'-')+'</td><td style="font-size:12px;color:var(--muted)">'+esc(areas)+'</td></tr>';
+          + '<td>'+st.total_score+'</td><td>'+(pct!==null&&pct!==undefined?pct+'%':'-')+'</td><td style="font-size:12px;color:var(--muted)">'+esc(areas)+'</td>'
+          + '<td><button class="btn secondary" data-act="liveToggleUnivMatch" data-round-id="'+st.exam_round_id+'" data-exam-no="'+esc(st.exam_no)+'" style="font-size:11px;padding:4px 8px">'+(univExpanded?'닫기':'매칭보기')+'</button></td>'
+          + '</tr>';
         if (expanded){
-          html += '<tr><td colspan="8" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderOxGridForKey(key) + '</div></td></tr>';
+          html += '<tr><td colspan="9" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderOxGridForKey(key) + '</div></td></tr>';
+        }
+        if (univExpanded){
+          html += '<tr><td colspan="9" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderUnivMatchForKey(key, st) + '</div></td></tr>';
         }
       });
       html += '</tbody></table></div>';
@@ -483,6 +502,44 @@ function renderOxGridForKey(key){
     return '<div class="empty">불러오는 중입니다...</div>';
   }
   return renderOxGrid(answers);
+}
+
+// 지망학과 매칭 - 학생의 희망학과(re.dept)를 대학 마스터 DB와 대조해 모집인원 대비 학과 내 석차를 보여준다.
+// 학과 내 석차·응시인원은 현재 불러온 성적표(state.liveResults.students, 통합 성적표면 합쳐진 인원 기준)로 클라이언트에서 계산하고,
+// 대학별 모집단위 정보는 대학 마스터 DB(university_master, dept_name 부분일치 검색)에서 가져온다.
+function renderUnivMatchForKey(key, student){
+  if (!student.dept){
+    return '<div class="empty">이 학생은 명단에 희망학과 정보가 없어 대학 매칭을 제공할 수 없습니다.</div>';
+  }
+  var allStudents = (state.liveResults && state.liveResults.students) || [];
+  var sameDept = allStudents.filter(function(s){ return s.dept === student.dept; });
+  var deptApplicants = sameDept.length;
+  var deptRank = sameDept.filter(function(s){ return Number(s.total_score) > Number(student.total_score); }).length + 1;
+
+  var html = '<div class="card"><h3>지망학과 매칭 - '+esc(student.dept)+'</h3>';
+
+  var cache = state.liveUnivMatchCache[key];
+  if (!cache){
+    html += '<div class="empty">불러오는 중입니다...</div></div>';
+    return html;
+  }
+  if (cache.length === 0){
+    html += '<div class="empty">대학 마스터 DB에서 "'+esc(student.dept)+'"와 일치/유사한 모집단위를 찾지 못했습니다. 대학DB 탭에서 등록되어 있는지 확인해주세요.</div></div>';
+    return html;
+  }
+  html += '<table class="match-table"><thead><tr><th>대학</th><th>모집단위</th><th>연도</th><th>일반</th><th>학사</th><th>학과 내 석차</th><th>판단(참고용)</th></tr></thead><tbody>';
+  cache.forEach(function(u){
+    var gen = u.quota_general!==null && u.quota_general!==undefined ? parseInt(u.quota_general) : NaN;
+    var ok = !isNaN(gen) ? deptRank <= gen : null;
+    html += '<tr><td>'+esc(u.univ_name)+'</td><td>'+esc(u.dept_name)+'</td><td>'+esc(u.year)+'</td>'
+      + '<td>'+(u.quota_general!==null?u.quota_general:'-')+'</td><td>'+(u.quota_academic!==null?u.quota_academic:'-')+'</td>'
+      + '<td>'+deptRank+' / '+deptApplicants+'</td>'
+      + '<td class="'+(ok===null?'':(ok?'pos':'neg'))+'">'+(ok===null?'-':(ok?'모집인원 내 순위':'모집인원 초과'))+'</td></tr>';
+  });
+  html += '</tbody></table>';
+  html += '<div class="note">대학명이 정확히 일치하지 않는 학과명도 부분일치로 함께 표시됩니다. 실제 지원 전에는 반드시 모집요강을 다시 확인해주세요.</div>';
+  html += '</div>';
+  return html;
 }
 function renderOxGrid(answers){
   if (!answers || answers.length===0) return '<div class="empty">문항 데이터가 없습니다.</div>';
@@ -591,7 +648,19 @@ function renderLiveQuestionsTab(){
 }
 
 function renderLiveUnivTab(){
-  var html = '<div class="card"><h3>대학 마스터 DB 대량 업로드</h3>';
+  var html = '<div class="card"><h3>대학 정보 개별 추가</h3>';
+  html += '<div class="note">대학 하나·학과 하나씩 직접 추가합니다. 같은 대학명+학과명+연도가 이미 있으면 모집인원만 갱신됩니다.</div>';
+  html += '<div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">';
+  html += liveInput('liveUnivNewUniv', '대학명', '');
+  html += liveInput('liveUnivNewDept', '모집단위(학과)', '');
+  html += liveInput('liveUnivNewYear', '연도', state.liveUnivYear);
+  html += liveInput('liveUnivNewGeneral', '일반 모집인원', '');
+  html += liveInput('liveUnivNewAcademic', '학사 모집인원', '');
+  html += '</div>';
+  html += '<button class="btn" data-act="liveUnivAdd" '+(state.liveLoading?'disabled':'')+'>추가</button>';
+  html += '</div>';
+
+  html += '<div class="card"><h3>대학 마스터 DB 대량 업로드</h3>';
   html += '<div class="note">"대학교/전공/일반/학사" 헤더가 있는 엑셀 파일을 올리면 자동으로 등록/갱신됩니다.</div>';
   html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">';
   html += liveInput('liveUnivUploadYearInput', '입시 연도', state.liveUnivUploadYear);
@@ -612,9 +681,26 @@ function renderLiveUnivTab(){
     if (state.liveUnivList.length===0){
       html += '<div class="empty">조건에 맞는 대학 마스터 데이터가 없습니다.</div></div>';
     } else {
-      html += '<div class="table-wrap"><table><thead><tr><th>대학</th><th>모집단위</th><th>연도</th><th>일반</th><th>학사</th></tr></thead><tbody>';
+      html += '<div class="table-wrap"><table><thead><tr><th>대학</th><th>모집단위</th><th>연도</th><th>일반</th><th>학사</th><th></th></tr></thead><tbody>';
       state.liveUnivList.slice(0,200).forEach(function(u){
-        html += '<tr><td>'+esc(u.univ_name)+'</td><td>'+esc(u.dept_name)+'</td><td>'+esc(u.year)+'</td><td>'+(u.quota_general!==null?u.quota_general:'-')+'</td><td>'+(u.quota_academic!==null?u.quota_academic:'-')+'</td></tr>';
+        if (state.liveUnivEditId === u.id){
+          html += '<tr>'
+            + '<td>'+liveInput('liveUnivEditUniv', '대학명', u.univ_name)+'</td>'
+            + '<td>'+liveInput('liveUnivEditDept', '학과', u.dept_name)+'</td>'
+            + '<td>'+liveInput('liveUnivEditYear', '연도', u.year)+'</td>'
+            + '<td>'+liveInput('liveUnivEditGeneral', '일반', u.quota_general!==null?u.quota_general:'')+'</td>'
+            + '<td>'+liveInput('liveUnivEditAcademic', '학사', u.quota_academic!==null?u.quota_academic:'')+'</td>'
+            + '<td style="white-space:nowrap">'
+            + '<button class="btn secondary" data-act="liveUnivEditSave" data-id="'+u.id+'" style="font-size:11px;padding:4px 8px">저장</button> '
+            + '<button class="btn secondary" data-act="liveUnivEditCancel" style="font-size:11px;padding:4px 8px">취소</button>'
+            + '</td></tr>';
+        } else {
+          html += '<tr><td>'+esc(u.univ_name)+'</td><td>'+esc(u.dept_name)+'</td><td>'+esc(u.year)+'</td><td>'+(u.quota_general!==null?u.quota_general:'-')+'</td><td>'+(u.quota_academic!==null?u.quota_academic:'-')+'</td>'
+            + '<td style="white-space:nowrap">'
+            + '<button class="btn secondary" data-act="liveUnivEditStart" data-id="'+u.id+'" style="font-size:11px;padding:4px 8px">수정</button> '
+            + '<button class="btn secondary" data-act="liveUnivDelete" data-id="'+u.id+'" style="font-size:11px;padding:4px 8px;color:var(--bad);border-color:var(--bad)">삭제</button>'
+            + '</td></tr>';
+        }
       });
       html += '</tbody></table></div>';
       if (state.liveUnivList.length>200){
@@ -1065,6 +1151,29 @@ document.addEventListener('click', function(e){
       });
     }
   }
+  else if (act==='liveToggleUnivMatch'){
+    var umRoundId = el.getAttribute('data-round-id');
+    var umExamNo = el.getAttribute('data-exam-no');
+    var umKey = umRoundId+'|'+umExamNo;
+    if (state.liveExpandedUnivKey === umKey){
+      setState({liveExpandedUnivKey: null});
+      return;
+    }
+    setState({liveExpandedUnivKey: umKey});
+    if (!state.liveUnivMatchCache[umKey]){
+      var umStudent = (state.liveResults && state.liveResults.students || []).find(function(s){
+        return String(s.exam_round_id)===String(umRoundId) && s.exam_no===umExamNo;
+      });
+      if (!umStudent || !umStudent.dept) { return; }
+      apiGetUnivMaster({ dept_name: umStudent.dept }).then(function(list){
+        var cache = Object.assign({}, state.liveUnivMatchCache);
+        cache[umKey] = list;
+        setState({liveUnivMatchCache: cache});
+      }).catch(function(err){
+        setState({liveMessage:err.message, liveMessageType:'error'});
+      });
+    }
+  }
   else if (act==='liveSearchStudent'){
     var exNo = $('#liveStudentExamInput').value.trim();
     if (!exNo){ return; }
@@ -1114,6 +1223,60 @@ document.addEventListener('click', function(e){
       setState({liveLoading:false, liveMessage:'대학DB 업로드 완료: '+result.inserted+'건 등록/갱신', liveMessageType:'ok'});
     }).catch(function(err){
       setState({liveLoading:false, liveMessage:'업로드 실패: '+err.message, liveMessageType:'error'});
+    });
+  }
+  else if (act==='liveUnivAdd'){
+    var auUniv = $('#liveUnivNewUniv').value.trim();
+    var auDept = $('#liveUnivNewDept').value.trim();
+    var auYear = $('#liveUnivNewYear').value.trim();
+    var auGeneral = $('#liveUnivNewGeneral').value.trim();
+    var auAcademic = $('#liveUnivNewAcademic').value.trim();
+    if (!auUniv || !auDept || !auYear){ setState({liveMessage:'대학명·학과·연도는 필수입니다.', liveMessageType:'error'}); return; }
+    setState({liveLoading:true});
+    apiUnivMasterAdd({ univ_name:auUniv, dept_name:auDept, year:auYear, quota_general:auGeneral||null, quota_academic:auAcademic||null }).then(function(){
+      setState({liveMessage:'추가되었습니다.', liveMessageType:'ok'});
+      return apiGetUnivMaster({ year: state.liveUnivYear, univ_name: state.liveUnivSearch });
+    }).then(function(list){
+      setState({liveLoading:false, liveUnivList:list});
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:err.message, liveMessageType:'error'});
+    });
+  }
+  else if (act==='liveUnivEditStart'){
+    setState({liveUnivEditId: parseInt(el.getAttribute('data-id'),10)});
+  }
+  else if (act==='liveUnivEditCancel'){
+    setState({liveUnivEditId: null});
+  }
+  else if (act==='liveUnivEditSave'){
+    var euId = el.getAttribute('data-id');
+    var euUniv = $('#liveUnivEditUniv').value.trim();
+    var euDept = $('#liveUnivEditDept').value.trim();
+    var euYear = $('#liveUnivEditYear').value.trim();
+    var euGeneral = $('#liveUnivEditGeneral').value.trim();
+    var euAcademic = $('#liveUnivEditAcademic').value.trim();
+    if (!euUniv || !euDept || !euYear){ setState({liveMessage:'대학명·학과·연도는 필수입니다.', liveMessageType:'error'}); return; }
+    setState({liveLoading:true});
+    apiUnivMasterUpdate(euId, { univ_name:euUniv, dept_name:euDept, year:euYear, quota_general:euGeneral||null, quota_academic:euAcademic||null }).then(function(){
+      setState({liveMessage:'수정되었습니다.', liveMessageType:'ok', liveUnivEditId:null});
+      return apiGetUnivMaster({ year: state.liveUnivYear, univ_name: state.liveUnivSearch });
+    }).then(function(list){
+      setState({liveLoading:false, liveUnivList:list});
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:err.message, liveMessageType:'error'});
+    });
+  }
+  else if (act==='liveUnivDelete'){
+    var duId = el.getAttribute('data-id');
+    if (!window.confirm('이 대학/학과 정보를 삭제할까요?')) return;
+    setState({liveLoading:true});
+    apiUnivMasterDelete(duId).then(function(){
+      setState({liveMessage:'삭제되었습니다.', liveMessageType:'ok'});
+      return apiGetUnivMaster({ year: state.liveUnivYear, univ_name: state.liveUnivSearch });
+    }).then(function(list){
+      setState({liveLoading:false, liveUnivList:list});
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:err.message, liveMessageType:'error'});
     });
   }
 

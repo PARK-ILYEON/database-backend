@@ -41,6 +41,35 @@ router.post('/', requireAdmin, async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
+// 개별 항목 수정 (대학명/학과명 자체를 바꾸는 경우도 포함하므로 id 기준으로 UPDATE)
+router.put('/:id', requireAdmin, async (req, res) => {
+  const { univ_name, dept_name, year, quota_general, quota_academic } = req.body;
+  if (!univ_name || !dept_name || !year) {
+    return res.status(400).json({ error: 'univ_name, dept_name, year는 필수입니다.' });
+  }
+  try {
+    const { rows } = await db.query(
+      `UPDATE university_master
+       SET univ_name=$1, dept_name=$2, year=$3, quota_general=$4, quota_academic=$5
+       WHERE id=$6
+       RETURNING *`,
+      [univ_name, dept_name, year, quota_general || null, quota_academic || null, req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: '해당 항목을 찾을 수 없습니다.' });
+    res.json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: '같은 대학명+학과명+연도 항목이 이미 있습니다.' });
+    throw err;
+  }
+});
+
+// 개별 항목 삭제
+router.delete('/:id', requireAdmin, async (req, res) => {
+  const { rows } = await db.query('DELETE FROM university_master WHERE id=$1 RETURNING id', [req.params.id]);
+  if (rows.length === 0) return res.status(404).json({ error: '해당 항목을 찾을 수 없습니다.' });
+  res.json({ deleted: true, id: rows[0].id });
+});
+
 // 대량 엑셀 업로드 (4-0/4-1: "전체 대학 검색" 시트 포맷 — 대학교/전공/일반/학사 4열)
 router.post('/bulk-upload', requireAdmin, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
