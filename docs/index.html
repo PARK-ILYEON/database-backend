@@ -158,6 +158,7 @@ var state = {
   liveDashboard: null,
   liveStudentSearchExamNo: '',
   liveStudentHistory: null,
+  liveStudentSelectedRoundId: null,
   liveUnivList: null,
   liveUnivYear: new Date().getFullYear(),
   liveUnivSearch: '',
@@ -606,17 +607,57 @@ function renderLiveStudentsTab(){
     if (hist.length===0){
       html += '<div class="empty">해당 수험번호로 채점된 이력이 없습니다.</div></div>';
     } else {
-      html += '<div class="table-wrap"><table><thead><tr><th>연도</th><th>교수/반</th><th>회차</th><th>총점</th><th>반 내 석차</th><th>반 내 백분위</th><th>통합 석차(전체 반)</th></tr></thead><tbody>';
+      var selectedId = state.liveStudentSelectedRoundId;
+      if (!selectedId || !hist.some(function(h){ return h.exam_round_id===selectedId; })){
+        selectedId = hist[hist.length-1].exam_round_id; // 가장 최근 회차 기본 선택
+      }
+      if (hist.length > 1){
+        html += '<div class="note">여러 회차에 응시한 이력이 있습니다. 행을 클릭하면 그 회차의 상세 성적표를 볼 수 있습니다.</div>';
+      }
+      html += '<div class="table-wrap"><table><thead><tr><th></th><th>연도</th><th>교수/반</th><th>회차</th><th>총점</th><th>반 내 석차</th><th>반 내 백분위</th><th>통합 석차(전체 반)</th></tr></thead><tbody>';
       hist.forEach(function(h){
         var isMerged = h.class_count > 1;
         var combinedCell = isMerged
           ? (h.combined_rank||'-')+' / '+h.combined_student_count+'명 ('+(h.combined_percentile!==null?h.combined_percentile+'%':'-')+')'
           : '<span style="color:var(--muted)">단일 반</span>';
-        html += '<tr><td>'+esc(h.exam_year)+'</td><td>'+esc(h.professor_name)+' / '+esc(h.class_name)+'</td><td>'+esc(h.round_label)+'</td>'
+        var isSel = h.exam_round_id===selectedId;
+        html += '<tr data-act="liveSelectStudentRound" data-round-id="'+h.exam_round_id+'" style="cursor:pointer;'+(isSel?'background:var(--accent-light)':'')+'">'
+          + '<td>'+(isSel?'▶':'')+'</td>'
+          + '<td>'+esc(h.exam_year)+'</td><td>'+esc(h.professor_name)+' / '+esc(h.class_name)+'</td><td>'+esc(h.round_label)+'</td>'
           + '<td>'+h.total_score+'</td><td>'+(h.overall_rank||'-')+'</td><td>'+(h.percentile!==null?h.percentile+'%':'-')+'</td>'
           + '<td>'+combinedCell+'</td></tr>';
       });
       html += '</tbody></table></div></div>';
+
+      var sel = hist.filter(function(h){ return h.exam_round_id===selectedId; })[0];
+      if (sel){
+        var isMergedSel = sel.class_count > 1;
+        var selRank = isMergedSel ? sel.combined_rank : sel.overall_rank;
+        var selPct = isMergedSel ? sel.combined_percentile : sel.percentile;
+        var selKey = sel.exam_round_id+'|'+state.liveStudentSearchExamNo;
+        var selAreaScores = sel.area_scores;
+        try { if (typeof selAreaScores==='string') selAreaScores = JSON.parse(selAreaScores); } catch(err){ selAreaScores = {}; }
+
+        html += '<div class="card"><h3>'+esc(sel.exam_year)+' · '+esc(sel.round_label)+' 상세 성적표</h3><div class="scorebig">'
+          + '<div class="item"><div class="num">'+sel.total_score+'</div><div class="lab">총점</div></div>'
+          + '<div class="item"><div class="num">'+(selPct!==null&&selPct!==undefined?selPct+'%':'-')+'</div><div class="lab">백분위'+(isMergedSel?' (통합)':'')+'</div></div>'
+          + '<div class="item"><div class="num">'+(selRank||'-')+'</div><div class="lab">석차'+(isMergedSel?' (통합)':'')+'</div></div>'
+          + '</div></div>';
+        html += renderAreaScoreBars(selAreaScores||{});
+
+        html += '<div class="card"><button class="btn secondary" data-act="liveToggleStudentAnswers" data-round-id="'+sel.exam_round_id+'" data-exam-no="'+esc(state.liveStudentSearchExamNo)+'">'
+          + (state.liveExpandedStudentKey===selKey ? '정오표 닫기' : '정오표 보기') + '</button>';
+        if (state.liveExpandedStudentKey===selKey){
+          var selAns = state.liveStudentAnswersCache[selKey];
+          if (!selAns){
+            html += '<div style="margin-top:10px">불러오는 중입니다...</div></div>';
+          } else {
+            html += '</div>' + renderWrongByArea(selAns) + '<div class="card">' + renderOxGrid(selAns) + '</div>';
+          }
+        } else {
+          html += '</div>';
+        }
+      }
     }
   }
   return html;
@@ -1246,12 +1287,15 @@ document.addEventListener('click', function(e){
   else if (act==='liveSearchStudent'){
     var exNo = $('#liveStudentExamInput').value.trim();
     if (!exNo){ return; }
-    setState({liveLoading:true, liveStudentSearchExamNo: exNo});
+    setState({liveLoading:true, liveStudentSearchExamNo: exNo, liveStudentSelectedRoundId:null});
     apiGetStudentHistory(exNo).then(function(hist){
       setState({liveLoading:false, liveStudentHistory:hist});
     }).catch(function(err){
       setState({liveLoading:false, liveMessage:err.message, liveMessageType:'error'});
     });
+  }
+  else if (act==='liveSelectStudentRound'){
+    setState({liveStudentSelectedRoundId: parseInt(el.getAttribute('data-round-id'),10)});
   }
   else if (act==='liveLoadDashboard'){
     setState({liveLoading:true});
