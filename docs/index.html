@@ -483,7 +483,7 @@ function renderLiveResultsTab(){
           + '<td><button class="btn secondary" data-act="liveToggleUnivMatch" data-round-id="'+st.exam_round_id+'" data-exam-no="'+esc(st.exam_no)+'" style="font-size:11px;padding:4px 8px">'+(univExpanded?'닫기':'매칭보기')+'</button></td>'
           + '</tr>';
         if (expanded){
-          html += '<tr><td colspan="9" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderOxGridForKey(key) + '</div></td></tr>';
+          html += '<tr><td colspan="9" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderScoreDetailForKey(key, st, rank, pct) + renderOxGridForKey(key) + '</div></td></tr>';
         }
         if (univExpanded){
           html += '<tr><td colspan="9" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderUnivMatchForKey(key, st) + '</div></td></tr>';
@@ -492,6 +492,37 @@ function renderLiveResultsTab(){
       html += '</tbody></table></div>';
     }
   }
+  return html;
+}
+
+// 채점 결과(총점/백분위/석차) + 영역별 취득 점수(그래프·취득%) — 성적표 행을 펼쳤을 때 정오표 위에 표시
+function renderScoreDetailForKey(key, st, rank, pct){
+  var html = '<div class="card"><h3>채점 결과 (통합 성적표 기준 석차·백분위)</h3><div class="scorebig">'
+    + '<div class="item"><div class="num">'+st.total_score+'</div><div class="lab">총점</div></div>'
+    + '<div class="item"><div class="num">'+(pct!==null&&pct!==undefined?pct+'%':'-')+'</div><div class="lab">백분위</div></div>'
+    + '<div class="item"><div class="num">'+(rank||'-')+'</div><div class="lab">석차</div></div>'
+    + '</div></div>';
+
+  var a = {};
+  try { a = typeof st.area_scores==='string' ? JSON.parse(st.area_scores) : (st.area_scores||{}); } catch(err){ a = {}; }
+  var areaKeys = Object.keys(a);
+  html += '<div class="card"><h3>영역별 취득 점수</h3>';
+  if (areaKeys.length===0){
+    html += '<div class="empty">영역별 채점 데이터가 없습니다.</div>';
+  } else {
+    areaKeys.forEach(function(k){
+      var earned = Number(a[k].earned||0);
+      var total = Number(a[k].total||0);
+      var pctArea = total>0 ? Math.round((earned/total)*1000)/10 : 0;
+      html += '<div class="bar-row">'
+        + '<div>'+esc(k)+'</div>'
+        + '<div>'+earned+'/'+total+'</div>'
+        + '<div class="bar-track"><div class="bar-fill'+(pctArea<50?' low':'')+'" style="width:'+pctArea+'%"></div></div>'
+        + '<div>'+pctArea+'%</div>'
+        + '</div>';
+    });
+  }
+  html += '</div>';
   return html;
 }
 

@@ -193,7 +193,12 @@ router.get('/:id/students/:examNo/answers', async (req, res) => {
     `SELECT ak.question_no, ak.point, ak.area_tag, ak.correct_answer, oa.student_answer, oa.is_correct,
             stats.correct_count, stats.total_count
      FROM answer_keys ak
-     LEFT JOIN omr_uploads ou ON ou.exam_round_id = ak.exam_round_id AND ou.status = 'done'
+     LEFT JOIN LATERAL (
+       SELECT id FROM omr_uploads o2
+       WHERE o2.exam_round_id = ak.exam_round_id AND o2.status = 'done'
+       ORDER BY o2.uploaded_at DESC, o2.id DESC
+       LIMIT 1
+     ) ou ON true
      LEFT JOIN omr_answers oa ON oa.omr_upload_id = ou.id AND oa.question_no = ak.question_no AND oa.exam_no = $2
      LEFT JOIN LATERAL (
        SELECT COUNT(*) FILTER (WHERE oa2.is_correct)::int AS correct_count, COUNT(*)::int AS total_count
@@ -238,7 +243,12 @@ router.get('/:id/question-stats', async (req, res) => {
             COUNT(oa.id) FILTER (WHERE oa.student_answer IS NOT NULL)::int AS answered_count,
             COUNT(oa.id)::int AS total_count
      FROM answer_keys ak
-     LEFT JOIN omr_uploads ou ON ou.exam_round_id = ak.exam_round_id AND ou.status='done'
+     LEFT JOIN LATERAL (
+       SELECT id FROM omr_uploads o2
+       WHERE o2.exam_round_id = ak.exam_round_id AND o2.status='done'
+       ORDER BY o2.uploaded_at DESC, o2.id DESC
+       LIMIT 1
+     ) ou ON true
      LEFT JOIN omr_answers oa ON oa.omr_upload_id = ou.id AND oa.question_no = ak.question_no
      WHERE ak.exam_round_id = ANY($1::int[])
      GROUP BY ak.question_no
