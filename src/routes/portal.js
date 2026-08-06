@@ -38,7 +38,9 @@ router.get('/lookup', async (req, res) => {
             re.real_name, re.masked_name
      FROM student_scores ss
      JOIN exam_rounds er ON er.id = ss.exam_round_id AND er.status = 'published'
-     LEFT JOIN rosters r ON r.exam_round_id = er.id
+     LEFT JOIN LATERAL (
+       SELECT id FROM rosters r2 WHERE r2.exam_round_id = er.id ORDER BY r2.uploaded_at DESC, r2.id DESC LIMIT 1
+     ) r ON true
      LEFT JOIN roster_entries re ON re.roster_id = r.id AND re.exam_no = ss.exam_no
      WHERE ss.exam_no = $1
      ORDER BY er.exam_date ASC NULLS LAST`,
@@ -89,18 +91,24 @@ router.get('/dept-rank', async (req, res) => {
   const { rows } = await db.query(
     `SELECT er.id AS exam_round_id, er.round_label, er.exam_year, re.dept, ss.total_score,
        (SELECT COUNT(*)+1 FROM student_scores ss2
-        JOIN rosters r2 ON r2.exam_round_id = ss2.exam_round_id
+        JOIN LATERAL (
+          SELECT id FROM rosters r2b WHERE r2b.exam_round_id = ss2.exam_round_id ORDER BY r2b.uploaded_at DESC, r2b.id DESC LIMIT 1
+        ) r2 ON true
         JOIN roster_entries re2 ON re2.roster_id = r2.id AND re2.exam_no = ss2.exam_no
         WHERE ss2.exam_round_id = ss.exam_round_id AND re2.dept = re.dept AND ss2.total_score > ss.total_score
        )::int AS dept_rank,
        (SELECT COUNT(*) FROM student_scores ss3
-        JOIN rosters r3 ON r3.exam_round_id = ss3.exam_round_id
+        JOIN LATERAL (
+          SELECT id FROM rosters r3b WHERE r3b.exam_round_id = ss3.exam_round_id ORDER BY r3b.uploaded_at DESC, r3b.id DESC LIMIT 1
+        ) r3 ON true
         JOIN roster_entries re3 ON re3.roster_id = r3.id AND re3.exam_no = ss3.exam_no
         WHERE ss3.exam_round_id = ss.exam_round_id AND re3.dept = re.dept
        )::int AS dept_applicants
      FROM student_scores ss
      JOIN exam_rounds er ON er.id = ss.exam_round_id AND er.status='published'
-     JOIN rosters r ON r.exam_round_id = er.id
+     JOIN LATERAL (
+       SELECT id FROM rosters r2c WHERE r2c.exam_round_id = er.id ORDER BY r2c.uploaded_at DESC, r2c.id DESC LIMIT 1
+     ) r ON true
      JOIN roster_entries re ON re.roster_id = r.id AND re.exam_no = ss.exam_no
      WHERE ss.exam_no = $1 AND re.dept IS NOT NULL AND re.dept <> ''
      ORDER BY er.exam_date DESC NULLS LAST, er.id DESC

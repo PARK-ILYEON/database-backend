@@ -117,7 +117,9 @@ router.get('/:id/results', async (req, res) => {
     `SELECT ss.exam_no, ss.total_score, ss.overall_rank, ss.percentile, ss.area_scores, ss.computed_at,
             re.real_name, re.masked_name, re.dept, re.track
      FROM student_scores ss
-     LEFT JOIN rosters r ON r.exam_round_id = ss.exam_round_id
+     LEFT JOIN LATERAL (
+       SELECT id FROM rosters r2 WHERE r2.exam_round_id = ss.exam_round_id ORDER BY r2.uploaded_at DESC, r2.id DESC LIMIT 1
+     ) r ON true
      LEFT JOIN roster_entries re ON re.roster_id = r.id AND re.exam_no = ss.exam_no
      WHERE ss.exam_round_id = $1
      ORDER BY ss.overall_rank ASC NULLS LAST, ss.total_score DESC`,
@@ -153,7 +155,9 @@ router.get('/combined-results', async (req, res) => {
      JOIN exam_rounds er ON er.id = ss.exam_round_id
      JOIN classes c ON c.id = er.class_id
      JOIN professors p ON p.id = c.professor_id
-     LEFT JOIN rosters r ON r.exam_round_id = ss.exam_round_id
+     LEFT JOIN LATERAL (
+       SELECT id FROM rosters r2 WHERE r2.exam_round_id = ss.exam_round_id ORDER BY r2.uploaded_at DESC, r2.id DESC LIMIT 1
+     ) r ON true
      LEFT JOIN roster_entries re ON re.roster_id = r.id AND re.exam_no = ss.exam_no
      WHERE ss.exam_round_id = ANY($1::int[])
      ORDER BY ss.total_score DESC`,
@@ -424,8 +428,9 @@ router.post('/:id/omr-upload', upload.single('file'), async (req, res) => {
     const { rows: rosterRows } = await client.query(
       `SELECT re.exam_no, re.real_name, re.masked_name, re.dept, re.track
        FROM roster_entries re
-       JOIN rosters r ON r.id = re.roster_id
-       WHERE r.exam_round_id = $1`,
+       JOIN (
+         SELECT id FROM rosters WHERE exam_round_id = $1 ORDER BY uploaded_at DESC, id DESC LIMIT 1
+       ) r ON r.id = re.roster_id`,
       [examRoundId]
     );
     const rosterStudents = rosterRows.map(r => ({

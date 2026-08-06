@@ -496,6 +496,30 @@ function renderLiveResultsTab(){
 }
 
 // 채점 결과(총점/백분위/석차) + 영역별 취득 점수(그래프·취득%) — 성적표 행을 펼쳤을 때 정오표 위에 표시
+// 영역별 취득 점수를 막대그래프+취득%로 보여준다 (관리자 성적표/학생 포털 공용)
+function renderAreaScoreBars(areaScores){
+  var a = areaScores || {};
+  var areaKeys = Object.keys(a);
+  var html = '<div class="card"><h3>영역별 취득 점수</h3>';
+  if (areaKeys.length===0){
+    html += '<div class="empty">영역별 채점 데이터가 없습니다.</div></div>';
+    return html;
+  }
+  areaKeys.forEach(function(k){
+    var earned = Number(a[k].earned||0);
+    var total = Number(a[k].total||0);
+    var pctArea = total>0 ? Math.round((earned/total)*1000)/10 : 0;
+    html += '<div class="bar-row">'
+      + '<div><span class="pill '+pillClassForArea(k)+'">'+esc(k)+'</span></div>'
+      + '<div>'+earned+'/'+total+'</div>'
+      + '<div class="bar-track"><div class="bar-fill'+(pctArea<50?' low':'')+'" style="width:'+pctArea+'%"></div></div>'
+      + '<div>'+pctArea+'%</div>'
+      + '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
 function renderScoreDetailForKey(key, st, rank, pct){
   var html = '<div class="card"><h3>채점 결과 (통합 성적표 기준 석차·백분위)</h3><div class="scorebig">'
     + '<div class="item"><div class="num">'+st.total_score+'</div><div class="lab">총점</div></div>'
@@ -505,24 +529,7 @@ function renderScoreDetailForKey(key, st, rank, pct){
 
   var a = {};
   try { a = typeof st.area_scores==='string' ? JSON.parse(st.area_scores) : (st.area_scores||{}); } catch(err){ a = {}; }
-  var areaKeys = Object.keys(a);
-  html += '<div class="card"><h3>영역별 취득 점수</h3>';
-  if (areaKeys.length===0){
-    html += '<div class="empty">영역별 채점 데이터가 없습니다.</div>';
-  } else {
-    areaKeys.forEach(function(k){
-      var earned = Number(a[k].earned||0);
-      var total = Number(a[k].total||0);
-      var pctArea = total>0 ? Math.round((earned/total)*1000)/10 : 0;
-      html += '<div class="bar-row">'
-        + '<div>'+esc(k)+'</div>'
-        + '<div>'+earned+'/'+total+'</div>'
-        + '<div class="bar-track"><div class="bar-fill'+(pctArea<50?' low':'')+'" style="width:'+pctArea+'%"></div></div>'
-        + '<div>'+pctArea+'%</div>'
-        + '</div>';
-    });
-  }
-  html += '</div>';
+  html += renderAreaScoreBars(a);
   return html;
 }
 
@@ -901,16 +908,7 @@ function renderPvReportTab(rows){
       + '<div class="item"><div class="num">'+(r.overall_rank!==null&&r.overall_rank!==undefined?r.overall_rank:'-')+'</div><div class="lab">전체 석차</div></div>'
       + '</div>';
 
-    var areaKeys = Object.keys(areaScores);
-    if (areaKeys.length>0){
-      html += '<table><thead><tr><th>영역</th><th>취득점수</th><th>총점수</th><th>취득률</th></tr></thead><tbody>';
-      areaKeys.forEach(function(k){
-        var b = areaScores[k];
-        var pct = b.total>0 ? Math.round((b.earned/b.total)*1000)/10 : 0;
-        html += '<tr><td><span class="pill '+pillClassForArea(k)+'">'+esc(k)+'</span></td><td>'+b.earned+'</td><td>'+b.total+'</td><td>'+pct+'%</td></tr>';
-      });
-      html += '</tbody></table>';
-    }
+    html += renderAreaScoreBars(areaScores);
     if (r.exam_round_id){
       html += '<div style="margin-top:10px"><button class="btn secondary" data-act="pvToggleAnswers" data-round-id="'+r.exam_round_id+'">'
         + (state.pvExpandedAnswersRoundId===r.exam_round_id ? '정오표 닫기' : '정오표 보기') + '</button></div>';
