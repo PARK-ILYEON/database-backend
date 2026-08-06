@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "migrate": "psql \"$DATABASE_URL\" -f migrations/001_init.sql",
+    "migrate:002": "psql \"$DATABASE_URL\" -f migrations/002_soft_delete_round.sql",
     "verify:parsers": "node scripts/verify-parsers.js",
     "create-admin": "node scripts/create-admin.js"
   },

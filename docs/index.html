@@ -254,6 +254,9 @@ function apiQuickCreateRound(payload){
 function apiPublishRounds(ids){
   return apiFetch('/api/exam-rounds/publish', { method:'POST', body: JSON.stringify({ exam_round_ids: ids }) });
 }
+function apiDeleteRound(id){
+  return apiFetch('/api/exam-rounds/'+id, { method:'DELETE' });
+}
 function apiUploadFile(examRoundId, kind, file, extra){
   var pathByKind = { omr:'omr-upload', answerKey:'answer-key-upload', roster:'roster-upload' };
   var fd = new FormData();
@@ -839,6 +842,12 @@ function liveInput(id, placeholder, value){
   return '<input id="'+id+'" data-act="liveInput" placeholder="'+esc(placeholder)+'" value="'+esc(value)+'" style="padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px"/>';
 }
 
+function fmtDateCompact(dateStr){
+  if (!dateStr) return '-';
+  var m = String(dateStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return esc(dateStr);
+  return m[1].slice(2)+m[2]+m[3];
+}
 function renderLiveRoundsList(){
   var html = '<div class="card"><h3>회차 목록 (실제 DB)</h3>';
   html += '<button class="btn secondary" data-act="liveRefreshRounds" style="margin-bottom:12px">'+(state.liveLoading?'불러오는 중...':'새로고침')+'</button>';
@@ -850,15 +859,21 @@ function renderLiveRoundsList(){
     html += '<div class="empty">아직 생성된 회차가 없습니다. 위에서 새 회차를 만들어보세요.</div></div>';
     return html;
   }
-  html += '<div class="table-wrap"><table><thead><tr><th></th><th>ID</th><th>대학명</th><th>교수/반</th><th>회차</th><th>연도</th><th>상태</th></tr></thead><tbody>';
+  html += '<div class="table-wrap"><table><thead><tr><th></th><th>ID</th><th>날짜</th><th>교수/반</th><th>회차</th><th>대학명</th><th>상태</th><th>삭제</th></tr></thead><tbody>';
   state.liveRounds.forEach(function(r){
     var expanded = state.liveExpandedRoundId === r.id;
-    html += '<tr data-act="liveToggleRound" data-id="'+r.id+'" style="cursor:pointer">'
-      + '<td>'+(expanded?'▼':'▶')+'</td><td>'+r.id+'</td><td>'+esc(r.academy_name||'-')+'</td>'
-      + '<td>'+esc(r.professor_name)+' / '+esc(r.class_name)+'</td><td>'+esc(r.round_label)+'</td><td>'+esc(r.exam_year)+'</td>'
-      + '<td>'+(r.status==='published'?'<span class="pill read">발행됨</span>':'<span class="pill gram">초안</span>')+'</td></tr>';
+    html += '<tr>'
+      + '<td data-act="liveToggleRound" data-id="'+r.id+'" style="cursor:pointer">'+(expanded?'▼':'▶')+'</td>'
+      + '<td data-act="liveToggleRound" data-id="'+r.id+'" style="cursor:pointer">'+r.id+'</td>'
+      + '<td data-act="liveToggleRound" data-id="'+r.id+'" style="cursor:pointer">'+fmtDateCompact(r.exam_date)+'</td>'
+      + '<td data-act="liveToggleRound" data-id="'+r.id+'" style="cursor:pointer">'+esc(r.professor_name)+' / '+esc(r.class_name)+'</td>'
+      + '<td data-act="liveToggleRound" data-id="'+r.id+'" style="cursor:pointer">'+esc(r.round_label)+'</td>'
+      + '<td data-act="liveToggleRound" data-id="'+r.id+'" style="cursor:pointer">'+esc(r.academy_name||'-')+'</td>'
+      + '<td data-act="liveToggleRound" data-id="'+r.id+'" style="cursor:pointer">'+(r.status==='published'?'<span class="pill read">발행됨</span>':'<span class="pill gram">초안</span>')+'</td>'
+      + '<td><button class="btn secondary" data-act="liveDeleteRound" data-id="'+r.id+'" style="color:var(--bad)">삭제</button></td>'
+      + '</tr>';
     if (expanded){
-      html += '<tr><td colspan="7" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderLiveRoundDetail(r) + '</div></td></tr>';
+      html += '<tr><td colspan="8" style="padding:0"><div style="padding:14px;background:var(--grey)">' + renderLiveRoundDetail(r) + '</div></td></tr>';
     }
   });
   html += '</tbody></table></div></div>';
@@ -1244,6 +1259,18 @@ document.addEventListener('click', function(e){
   else if (act==='liveToggleRound'){
     var rid = parseInt(el.getAttribute('data-id'), 10);
     setState({liveExpandedRoundId: state.liveExpandedRoundId===rid ? null : rid});
+  }
+  else if (act==='liveDeleteRound'){
+    var delId = parseInt(el.getAttribute('data-id'), 10);
+    if (!window.confirm('이 회차를 삭제하시겠습니까? (관리자 화면 목록에서만 사라지고, DB에는 그대로 남아 필요하면 복구할 수 있습니다)')) return;
+    setState({liveLoading:true});
+    apiDeleteRound(delId).then(function(){
+      return apiListExamRounds().then(function(list){
+        setState({liveRounds:list, liveLoading:false, liveMessage:'회차가 삭제되었습니다.', liveMessageType:'ok'});
+      });
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:err.message, liveMessageType:'error'});
+    });
   }
   else if (act==='livePublishRound'){
     var pid = parseInt(el.getAttribute('data-id'), 10);

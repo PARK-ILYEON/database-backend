@@ -291,12 +291,24 @@ router.get('/', async (req, res) => {
              JOIN classes c ON c.id = er.class_id
              JOIN professors p ON p.id = c.professor_id
              JOIN academies a ON a.id = c.academy_id`;
+  conditions.push(`er.status <> 'deleted'`); // 삭제(소프트 삭제)된 회차는 목록에서 제외
   if (professor) { params.push(professor); conditions.push(`p.name = $${params.length}`); }
   if (year) { params.push(Number(year)); conditions.push(`er.exam_year = $${params.length}`); }
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
   sql += ' ORDER BY er.exam_date DESC NULLS LAST, er.id DESC';
   const { rows } = await db.query(sql, params);
   res.json(rows);
+});
+
+// 회차 삭제 (소프트 삭제: 실제 행은 지우지 않고 status만 'deleted'로 바꾼다.
+// DB에 직접 접속하는 관리자는 이 행을 그대로 조회할 수 있고, 필요하면 status를 되돌려 복구할 수 있다.)
+router.delete('/:id', async (req, res) => {
+  const { rows } = await db.query(
+    `UPDATE exam_rounds SET status='deleted' WHERE id=$1 RETURNING id`,
+    [req.params.id]
+  );
+  if (rows.length === 0) return res.status(404).json({ error: '해당 회차를 찾을 수 없습니다.' });
+  res.json({ deleted: true, id: rows[0].id });
 });
 
 // 정답지 등록 (엑셀 업로드: sheetIndex로 어느 시트인지 지정, 기본은 3번째 시트)
