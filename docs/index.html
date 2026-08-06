@@ -894,23 +894,22 @@ function renderPortalLiveLookup(){
 }
 
 // 오답을 영역별로 집계해서 보여준다 (정오표 데이터가 준비된 경우에만)
+// 누적오답노트와 같은 형식(문항번호/영역/배점/전체 정답률/내 답 · 정답)으로 이 회차의 오답만 모아 보여준다.
 function renderWrongByArea(answers){
   if (!answers || answers.length===0) return '';
-  var counts = {};
-  var order = [];
-  answers.forEach(function(q){
-    if (q.isCorrect===false){
-      var tag = q.areaTag || '기타';
-      if (!counts[tag]){ counts[tag]=0; order.push(tag); }
-      counts[tag] += 1;
-    }
+  var wrong = answers.filter(function(q){ return q.isCorrect===false; });
+  if (wrong.length===0){
+    return '<div class="card"><h3>오답 영역별 분포</h3><div class="empty">오답이 없습니다.</div></div>';
+  }
+  var html = '<div class="card"><h3>오답 영역별 분포</h3>';
+  html += '<table><thead><tr><th>문항번호</th><th>영역</th><th>배점</th><th>전체 정답률</th><th>내 답 / 정답</th></tr></thead><tbody>';
+  wrong.forEach(function(q){
+    html += '<tr><td>'+q.questionNo+'번</td>'
+      + '<td><span class="pill '+pillClassForArea(q.areaTag)+'">'+esc(q.areaTag||'-')+'</span></td>'
+      + '<td>'+q.point+'점</td><td>'+(q.correctRate!==null?q.correctRate+'%':'-')+'</td>'
+      + '<td>'+esc((q.studentAnswer||'-').toUpperCase())+' / '+esc((q.correctAnswer||'-').toUpperCase())+'</td></tr>';
   });
-  if (order.length===0) return '<div class="card"><h3>오답 영역별 분포</h3><div class="empty">오답이 없습니다.</div></div>';
-  var html = '<div class="card"><h3>오답 영역별 분포</h3><div class="metabar">';
-  order.forEach(function(tag){
-    html += '<span><span class="pill '+pillClassForArea(tag)+'">'+esc(tag)+'</span> '+counts[tag]+'개</span>';
-  });
-  html += '</div></div>';
+  html += '</tbody></table></div>';
   return html;
 }
 
