@@ -146,6 +146,20 @@ var state = {
   liveNewRound: { exam_date:'', professor_name:'', class_name:'', round_label:'', academy_name:'' },
   liveExpandedRoundId: null,
 
+  // ---- 합격 예측(참고) 기능 ----
+  admissionUploadYear: new Date().getFullYear(),
+  externalMockRounds: [],
+  externalMockRoundsLoaded: false,
+  externalMockNewYear: new Date().getFullYear(),
+  externalMockNewMonth: '',
+  admissionDeptList: null,
+  distSearchUniv: '',
+  distSearchDept: '',
+  distSearchExamNo: '',
+  distResult: null,
+  admissionMessage: '',
+  admissionMessageType: 'info',
+
   // ---- 실제 연동 2단계: 성적표/학생관리/대시보드/문항통계/대학DB ----
   liveSubtab: 'rounds', // rounds | results | students | dashboard | questions | univ
   liveResultsRoundId: null,
@@ -304,6 +318,39 @@ function apiUnivMasterUpdate(id, payload){
 function apiUnivMasterDelete(id){
   return apiFetch('/api/university-master/'+id, { method:'DELETE' });
 }
+// ---- 합격 예측(참고) 기능 ----
+function apiExamRoundResultsUpload(examRoundId, file){
+  var fd = new FormData();
+  fd.append('file', file);
+  return apiFetch('/api/exam-rounds/'+examRoundId+'/results-upload', { method:'POST', body: fd });
+}
+function apiAdmissionCasesUpload(file, admissionYear){
+  var fd = new FormData();
+  fd.append('file', file);
+  fd.append('admission_year', admissionYear);
+  return apiFetch('/api/admission-prediction/admission-cases/upload', { method:'POST', body: fd });
+}
+function apiAdmissionDeptList(){
+  return apiFetch('/api/admission-prediction/admission-cases/dept-list');
+}
+function apiExternalMockRoundsList(){
+  return apiFetch('/api/admission-prediction/external-mock-rounds');
+}
+function apiExternalMockRoundCreate(examYear, examMonth, label){
+  return apiFetch('/api/admission-prediction/external-mock-rounds', {
+    method:'POST', body: JSON.stringify({ exam_year: examYear, exam_month: examMonth, label: label })
+  });
+}
+function apiExternalMockRoundUpload(roundId, file){
+  var fd = new FormData();
+  fd.append('file', file);
+  return apiFetch('/api/admission-prediction/external-mock-rounds/'+roundId+'/upload', { method:'POST', body: fd });
+}
+function apiAdmissionDistribution(univName, deptName, examNo){
+  var qs = 'univ_name='+encodeURIComponent(univName)+'&dept_name='+encodeURIComponent(deptName);
+  if (examNo) qs += '&exam_no='+encodeURIComponent(examNo);
+  return apiFetch('/api/admission-prediction/distribution?' + qs);
+}
 // ---- 학생 포털(실제, 로그인 불필요) ----
 function apiPortalLookup(examNo){
   return apiFetch('/api/portal/lookup?exam_no=' + encodeURIComponent(examNo));
@@ -411,7 +458,7 @@ function renderLiveTab(){
   }
 
   html += '<div class="subtabs">';
-  [['rounds','회차관리'],['results','성적표'],['students','학생조회'],['dashboard','대시보드'],['questions','문항통계'],['univ','대학DB']].forEach(function(t){
+  [['rounds','회차관리'],['results','성적표'],['students','학생조회'],['dashboard','대시보드'],['questions','문항통계'],['univ','대학DB'],['admission','합격DB']].forEach(function(t){
     html += '<button data-act="setLiveSubtab" data-sub="'+t[0]+'" class="'+(state.liveSubtab===t[0]?'active':'')+'">'+t[1]+'</button>';
   });
   html += '</div>';
@@ -429,6 +476,8 @@ function renderLiveTab(){
     html += renderLiveQuestionsTab();
   } else if (state.liveSubtab==='univ'){
     html += renderLiveUnivTab();
+  } else if (state.liveSubtab==='admission'){
+    html += renderLiveAdmissionTab();
   }
   return html;
 }
@@ -746,6 +795,104 @@ function renderLiveQuestionsTab(){
   return html;
 }
 
+function renderLiveAdmissionTab(){
+  var html = '';
+
+  if (state.admissionMessage){
+    var isErr = state.admissionMessageType==='error';
+    html += '<div class="note" style="'+(isErr?'border-color:#EBB;background:#FDEEEE;color:var(--bad)':'border-color:#CDE8CD;background:#F4FAF4;color:var(--ok)')+'">'+esc(state.admissionMessage)+'</div>';
+  }
+
+  html += '<div class="card"><h3>합격자명단 업로드 (연도별)</h3>';
+  html += '<div class="note">대학명/모집단위/편입유형/합격여부/이름/아이디 컬럼이 있는 파일을 연도별로 올려주세요. 시트는 자동 인식됩니다.</div>';
+  html += liveInput('admissionYearInput', '합격 연도 (예: 2026)', state.admissionUploadYear);
+  html += '<input type="file" id="admissionCasesFileInput" accept=".xlsx" style="margin-top:8px;display:block"/>';
+  html += '<button class="btn" data-act="admissionCasesUpload" style="margin-top:8px">업로드</button>';
+  html += '</div>';
+
+  html += '<div class="card"><h3>외부 모의고사 회차</h3>';
+  html += '<div class="note">편입모의고사 등 외부 대행업체 성적을 월별로 올립니다. 아이디 기반 데이터라 기존 회차관리(수험번호 기반)와는 별도로 관리됩니다.</div>';
+  html += '<div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr))">';
+  html += liveInput('externalMockYearInput', '연도', state.externalMockNewYear);
+  html += liveInput('externalMockMonthInput', '월', state.externalMockNewMonth);
+  html += liveInput('externalMockLabelInput', '라벨 (선택)', '');
+  html += '</div>';
+  html += '<button class="btn" data-act="externalMockRoundCreate" style="margin-top:8px">회차 만들기</button>';
+  html += '<button class="btn secondary" data-act="externalMockRoundsRefresh" style="margin-top:8px;margin-left:8px">'+(state.liveLoading?'불러오는 중...':'새로고침')+'</button>';
+
+  if (state.externalMockRoundsLoaded){
+    if (state.externalMockRounds.length===0){
+      html += '<div class="empty" style="margin-top:10px">아직 만든 회차가 없습니다.</div>';
+    } else {
+      html += '<div class="table-wrap"><table style="margin-top:10px"><thead><tr><th>연도</th><th>월</th><th>라벨</th><th>성적 건수</th><th>결과 업로드</th></tr></thead><tbody>';
+      state.externalMockRounds.forEach(function(r){
+        html += '<tr><td>'+r.exam_year+'</td><td>'+r.exam_month+'</td><td>'+esc(r.label||'-')+'</td><td>'+r.score_count+'</td>'
+          + '<td><input type="file" data-external-mock-round-id="'+r.id+'" accept=".xlsx" style="max-width:200px"/></td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+  }
+  html += '</div>';
+
+  html += '<div class="card"><h3>합격생 성적 분포 조회</h3>';
+  html += '<div class="note">대학명/모집단위(학과)로 검색하면 그 학과 합격생들의 최근 모의고사 백분위 분포를 보여줍니다. 수험번호를 같이 입력하면 그 학생과 비교됩니다(명단 업로드 시 아이디가 매핑되어 있어야 함). 확률이 아니라 참고용 위치 비교입니다.</div>';
+  html += '<div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">';
+  html += liveInput('distUnivInput', '대학명', state.distSearchUniv);
+  html += liveInput('distDeptInput', '모집단위(학과)', state.distSearchDept);
+  html += liveInput('distExamNoInput', '수험번호 (선택)', state.distSearchExamNo);
+  html += '</div>';
+  html += '<button class="btn" data-act="admissionDistSearch" style="margin-top:8px">조회</button>';
+
+  if (state.distResult){
+    var d = state.distResult;
+    html += '<div style="margin-top:14px">';
+    html += '<div class="note">합격 사례 '+d.caseCount+'건, 성적 매칭된 학생 '+d.matchedStudentCount+'명</div>';
+    if (d.distribution.length===0){
+      html += '<div class="empty">매칭된 모의고사 성적이 없습니다.</div>';
+    } else {
+      html += '<table><thead><tr><th>과목</th><th>표본수(N)</th><th>최저 백분위</th><th>평균 백분위</th><th>최고 백분위</th></tr></thead><tbody>';
+      d.distribution.forEach(function(row){
+        html += '<tr><td>'+esc(row.subject)+'</td><td>'+row.n+'</td><td>'+row.minPercentile+'</td><td>'+row.avgPercentile+'</td><td>'+row.maxPercentile+'</td></tr>';
+      });
+      html += '</tbody></table>';
+      if (d.distribution.some(function(row){ return row.n < 3; })){
+        html += '<div class="note" style="margin-top:6px">표본수(N)가 3 미만인 과목이 있습니다 — 참고용으로만 사용하세요.</div>';
+      }
+    }
+    if (d.me){
+      if (d.me.note){
+        html += '<div class="note" style="margin-top:8px">'+esc(d.me.note)+'</div>';
+      } else if (d.me.subjects.length===0){
+        html += '<div class="empty" style="margin-top:8px">이 학생의 외부 모의고사 성적이 없습니다.</div>';
+      } else {
+        html += '<div style="margin-top:8px"><b>이 학생 최근 성적</b>';
+        html += '<table><thead><tr><th>과목</th><th>백분위</th><th>원점수</th><th>회차</th></tr></thead><tbody>';
+        d.me.subjects.forEach(function(s){
+          html += '<tr><td>'+esc(s.subject)+'</td><td>'+(s.percentile!==null&&s.percentile!==undefined?s.percentile:'-')+'</td><td>'+(s.rawScore!==null&&s.rawScore!==undefined?s.rawScore:'-')+'</td><td>'+s.examYear+'-'+s.examMonth+'</td></tr>';
+        });
+        html += '</tbody></table></div>';
+      }
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  if (state.admissionDeptList){
+    html += '<div class="card"><h3>합격자명단에 등장한 대학/학과 목록</h3>';
+    if (state.admissionDeptList.length===0){
+      html += '<div class="empty">아직 업로드된 합격자명단이 없습니다.</div>';
+    } else {
+      html += '<div class="table-wrap"><table><thead><tr><th>대학명</th><th>학과</th><th>사례 수</th><th>연도 범위</th></tr></thead><tbody>';
+      state.admissionDeptList.forEach(function(r){
+        html += '<tr><td>'+esc(r.univ_name)+'</td><td>'+esc(r.dept_name)+'</td><td>'+r.case_count+'</td><td>'+r.min_year+'~'+r.max_year+'</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+    html += '</div>';
+  }
+
+  return html;
+}
 function renderLiveUnivTab(){
   var html = '<div class="card"><h3>대학 정보 개별 추가</h3>';
   html += '<div class="note">대학 하나·학과 하나씩 직접 추가합니다. 같은 대학명+학과명+연도가 이미 있으면 모집인원만 갱신됩니다.</div>';
@@ -895,6 +1042,10 @@ function renderLiveRoundDetail(r){
   html += '<div><div style="font-weight:700;margin-bottom:6px">3. OMR 리딩결과 업로드</div>'
     + '<div class="note" style="margin-bottom:8px">정답지가 먼저 등록되어 있어야 자동 채점까지 됩니다.</div>'
     + '<input type="file" data-upload="omr" data-round-id="'+r.id+'" accept=".xlsx" style="margin-top:8px;display:block"/></div>';
+
+  html += '<div><div style="font-weight:700;margin-bottom:6px">4. 결과 파일 직접 업로드 (이미 채점됨)</div>'
+    + '<div class="note" style="margin-bottom:8px">정답지·명단·OMR 없이, 수험번호/총점(또는 실득점)/백분위/석차가 이미 있는 파일을 그대로 성적표로 반영합니다.</div>'
+    + '<input type="file" data-results-upload-round-id="'+r.id+'" accept=".xlsx" style="margin-top:8px;display:block"/></div>';
 
   html += '</div>';
   html += '<div style="margin-top:14px">'
@@ -1284,7 +1435,69 @@ document.addEventListener('click', function(e){
     });
   }
   else if (act==='setLiveSubtab'){
-    setState({liveSubtab: el.getAttribute('data-sub')});
+    var newSub = el.getAttribute('data-sub');
+    setState({liveSubtab: newSub});
+    if (newSub==='admission'){
+      if (!state.externalMockRoundsLoaded){
+        apiExternalMockRoundsList().then(function(list){
+          setState({externalMockRounds:list, externalMockRoundsLoaded:true});
+        }).catch(function(err){ setState({admissionMessage:err.message, admissionMessageType:'error'}); });
+      }
+      if (!state.admissionDeptList){
+        apiAdmissionDeptList().then(function(list){
+          setState({admissionDeptList:list});
+        }).catch(function(err){ setState({admissionMessage:err.message, admissionMessageType:'error'}); });
+      }
+    }
+  }
+  else if (act==='admissionCasesUpload'){
+    var acFile = document.getElementById('admissionCasesFileInput').files[0];
+    var acYear = parseInt(document.getElementById('admissionYearInput').value, 10);
+    if (!acFile){ setState({admissionMessage:'파일을 선택해주세요.', admissionMessageType:'error'}); return; }
+    if (!acYear){ setState({admissionMessage:'합격 연도를 입력해주세요.', admissionMessageType:'error'}); return; }
+    setState({liveLoading:true, admissionMessage:'업로드 중...', admissionMessageType:'info'});
+    apiAdmissionCasesUpload(acFile, acYear).then(function(result){
+      setState({liveLoading:false, admissionMessage:'합격자명단 '+result.caseCount+'건 업로드 완료 ('+result.admissionYear+'년)', admissionMessageType:'ok'});
+      return apiAdmissionDeptList();
+    }).then(function(list){
+      setState({admissionDeptList:list});
+    }).catch(function(err){
+      setState({liveLoading:false, admissionMessage:err.message, admissionMessageType:'error'});
+    });
+  }
+  else if (act==='externalMockRoundCreate'){
+    var emYear = parseInt(document.getElementById('externalMockYearInput').value, 10);
+    var emMonth = parseInt(document.getElementById('externalMockMonthInput').value, 10);
+    var emLabel = document.getElementById('externalMockLabelInput').value.trim();
+    if (!emYear || !emMonth){ setState({admissionMessage:'연도와 월을 입력해주세요.', admissionMessageType:'error'}); return; }
+    setState({liveLoading:true});
+    apiExternalMockRoundCreate(emYear, emMonth, emLabel || null).then(function(){
+      return apiExternalMockRoundsList();
+    }).then(function(list){
+      setState({liveLoading:false, externalMockRounds:list, externalMockRoundsLoaded:true, admissionMessage:'회차가 생성되었습니다.', admissionMessageType:'ok'});
+    }).catch(function(err){
+      setState({liveLoading:false, admissionMessage:err.message, admissionMessageType:'error'});
+    });
+  }
+  else if (act==='externalMockRoundsRefresh'){
+    setState({liveLoading:true});
+    apiExternalMockRoundsList().then(function(list){
+      setState({liveLoading:false, externalMockRounds:list, externalMockRoundsLoaded:true});
+    }).catch(function(err){
+      setState({liveLoading:false, admissionMessage:err.message, admissionMessageType:'error'});
+    });
+  }
+  else if (act==='admissionDistSearch'){
+    var duUniv = document.getElementById('distUnivInput').value.trim();
+    var duDept = document.getElementById('distDeptInput').value.trim();
+    var duExamNo = document.getElementById('distExamNoInput').value.trim();
+    if (!duUniv || !duDept){ setState({admissionMessage:'대학명과 학과를 입력해주세요.', admissionMessageType:'error'}); return; }
+    setState({liveLoading:true, distSearchUniv:duUniv, distSearchDept:duDept, distSearchExamNo:duExamNo});
+    apiAdmissionDistribution(duUniv, duDept, duExamNo).then(function(result){
+      setState({liveLoading:false, distResult:result});
+    }).catch(function(err){
+      setState({liveLoading:false, admissionMessage:err.message, admissionMessageType:'error'});
+    });
   }
   else if (act==='liveToggleResultRound'){
     var trId = parseInt(el.getAttribute('data-id'), 10);
@@ -1593,6 +1806,39 @@ document.addEventListener('change', function(e){
   }).catch(function(err){
     setState({liveLoading:false, liveMessage:'업로드 실패: ' + err.message, liveMessageType:'error'});
   });
+});
+
+document.addEventListener('change', function(e){
+  var el = e.target;
+  if (!el.matches) return;
+
+  if (el.matches('input[type=file][data-external-mock-round-id]')){
+    var emRoundId = el.getAttribute('data-external-mock-round-id');
+    var emFile = el.files && el.files[0];
+    if (!emFile) return;
+    setState({liveLoading:true, admissionMessage:'업로드 중... ('+emFile.name+')', admissionMessageType:'info'});
+    apiExternalMockRoundUpload(emRoundId, emFile).then(function(result){
+      return apiExternalMockRoundsList().then(function(list){
+        setState({liveLoading:false, externalMockRounds:list, admissionMessage:'모의고사 성적 '+result.scoreCount+'건 업로드 완료', admissionMessageType:'ok'});
+      });
+    }).catch(function(err){
+      setState({liveLoading:false, admissionMessage:'업로드 실패: ' + err.message, admissionMessageType:'error'});
+    });
+    return;
+  }
+
+  if (el.matches('input[type=file][data-results-upload-round-id]')){
+    var ruRoundId = el.getAttribute('data-results-upload-round-id');
+    var ruFile = el.files && el.files[0];
+    if (!ruFile) return;
+    setState({liveLoading:true, liveMessage:'업로드 중... ('+ruFile.name+')', liveMessageType:'info'});
+    apiExamRoundResultsUpload(ruRoundId, ruFile).then(function(result){
+      setState({liveLoading:false, liveMessage:'결과 업로드 완료: '+result.studentCount+'명 반영', liveMessageType:'ok'});
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:'업로드 실패: ' + err.message, liveMessageType:'error'});
+    });
+    return;
+  }
 });
 
 document.addEventListener('keydown', function(e){

@@ -10,13 +10,15 @@ function norm(s) {
 }
 
 function scanHeader(rows, maxRow = 4, maxCol = 30) {
-  let examNoCol = null, nameCol = null, deptCol = null, trackCol = null, maskedNameCol = null;
+  let examNoCol = null, nameCol = null, deptCol = null, trackCol = null, maskedNameCol = null, externalIdCol = null;
   const roundCols = {}; // { 1: colIndex, 2: colIndex, ... }
   let headerEndRow = 0;
 
   // 데이터 행의 마스킹 이름 값("강OO","곽OO" 등)도 "OO"를 포함하므로,
   // 헤더 라벨은 느슨한 includes가 아니라 알려진 라벨 텍스트와 정확히 일치해야만 인정한다.
   const MASKED_NAME_LABELS = new Set(['OO처리', '마스킹이름', '마스킹', '별칭']);
+  // 외부(편입모의고사 대행업체 등) 아이디 — 있으면 수험번호<->아이디 매핑에 쓰인다. 없어도 무방(선택 컬럼).
+  const EXTERNAL_ID_LABELS = new Set(['아이디', 'ID', '외부아이디', '회원아이디']);
 
   for (let r = 0; r < Math.min(maxRow, rows.length); r++) {
     const row = rows[r] || [];
@@ -28,6 +30,7 @@ function scanHeader(rows, maxRow = 4, maxCol = 30) {
       else if (text === '학과') { deptCol = c; headerEndRow = Math.max(headerEndRow, r); }
       else if (text === '계열') { trackCol = c; headerEndRow = Math.max(headerEndRow, r); }
       else if (MASKED_NAME_LABELS.has(text)) { maskedNameCol = c; headerEndRow = Math.max(headerEndRow, r); }
+      else if (EXTERNAL_ID_LABELS.has(text.toUpperCase()) || EXTERNAL_ID_LABELS.has(text)) { externalIdCol = c; headerEndRow = Math.max(headerEndRow, r); }
       else {
         const m = text.match(/^(\d+)차$/);
         if (m) { roundCols[Number(m[1])] = c; headerEndRow = Math.max(headerEndRow, r); }
@@ -39,7 +42,7 @@ function scanHeader(rows, maxRow = 4, maxCol = 30) {
     throw new Error('명단 시트에서 "수험번호" 라벨을 찾지 못했습니다. 시트 구조를 확인해주세요.');
   }
 
-  return { examNoCol, nameCol, deptCol, trackCol, maskedNameCol, roundCols, dataStartRow: headerEndRow + 1 };
+  return { examNoCol, nameCol, deptCol, trackCol, maskedNameCol, externalIdCol, roundCols, dataStartRow: headerEndRow + 1 };
 }
 
 /**
@@ -72,6 +75,7 @@ function parseRosterRows(rows) {
       dept: header.deptCol !== null ? String(row[header.deptCol] ?? '').trim() || null : null,
       track: header.trackCol !== null ? String(row[header.trackCol] ?? '').trim() || null : null,
       maskedName: header.maskedNameCol !== null ? String(row[header.maskedNameCol] ?? '').trim() || null : null,
+      externalId: header.externalIdCol !== null ? String(row[header.externalIdCol] ?? '').trim() || null : null,
       roundPercentiles
     });
   }

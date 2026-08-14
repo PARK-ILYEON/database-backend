@@ -5,6 +5,7 @@ const studentsRouter = require('./routes/students');
 const portalRouter = require('./routes/portal');
 const universityMasterRouter = require('./routes/universityMaster');
 const adminAuthRouter = require('./routes/adminAuth');
+const admissionPredictionRouter = require('./routes/admissionPrediction');
 const { requireAdmin } = require('./middleware/requireAdmin');
 
 function createApp() {
@@ -33,6 +34,9 @@ function createApp() {
 
   // 대학 마스터: 조회(GET)는 공개, 등록/수정/대량업로드는 관리자 전용
   app.use('/api/university-master', universityMasterRouter);
+
+  // 합격 예측(참고) 기능: 합격자명단/외부 모의고사 데이터 — 관리자 전용
+  app.use('/api/admission-prediction', requireAdmin, admissionPredictionRouter);
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {

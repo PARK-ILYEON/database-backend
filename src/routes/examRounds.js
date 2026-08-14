@@ -5,6 +5,7 @@ const db = require('../db');
 const { parseOmrFile } = require('../parsers/omrParser');
 const { parseAnswerKeySheet, parseAnswerKeyWorkbook } = require('../parsers/answerKeyParser');
 const { parseRosterSheet, parseRosterWorkbook, maskName } = require('../parsers/rosterParser');
+const { parseResultsOnlyWorkbook } = require('../parsers/resultsOnlyParser');
 const { readWorkbookRobust } = require('../parsers/normalizeXlsx');
 const { runScoringPipeline } = require('../services/scoring');
 
@@ -377,6 +378,7 @@ router.post('/:id/roster-upload', upload.single('file'), async (req, res) => {
       [examRoundId, req.file.originalname]
     );
     const rosterId = rows[0].id;
+    let externalIdMapped = 0;
     for (const s of students) {
       await client.query(
         `INSERT INTO roster_entries (roster_id, exam_no, real_name, masked_name, track, dept, round_percentiles)
@@ -384,9 +386,57 @@ router.post('/:id/roster-upload', upload.single('file'), async (req, res) => {
          ON CONFLICT (roster_id, exam_no) DO NOTHING`,
         [rosterId, s.examNo, s.realName, s.maskedName || maskName(s.realName), s.track, s.dept, JSON.stringify(s.roundPercentiles || {})]
       );
+      // 명단에 "아이디" 열이 있으면 수험번호<->외부 아이디 매핑을 같이 갱신한다.
+      // (편입모의고사 대행업체 등 외부 데이터를 이 학생과 나중에 연결하기 위함)
+      if (s.externalId) {
+        await client.query(
+          `INSERT INTO student_external_id_map (exam_no, student_external_id, real_name, updated_at)
+           VALUES ($1,$2,$3, now())
+           ON CONFLICT (exam_no) DO UPDATE SET student_external_id=$2, real_name=$3, updated_at=now()`,
+          [s.examNo, s.externalId, s.realName]
+        );
+        externalIdMapped++;
+      }
     }
     await client.query('COMMIT');
-    res.status(201).json({ rosterId, studentCount: students.length });
+    res.status(201).json({ rosterId, studentCount: students.length, externalIdMapped });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'DB 저장 실패: ' + err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// 결과-only 업로드: 이미 채점이 끝난 파일(수험번호/총점/백분위/석차)을 정답지·명단·OMR 없이 바로 성적표로 반영한다.
+router.post('/:id/results-upload', upload.single('file'), async (req, res) => {
+  const examRoundId = req.params.id;
+  if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
+
+  let results;
+  try {
+    const wb = readWorkbookRobust(req.file.buffer);
+    results = parseResultsOnlyWorkbook(wb);
+  } catch (err) {
+    return res.status(422).json({ error: '결과 파일 파싱 실패: ' + err.message });
+  }
+
+  const client = await db.pool.connect();
+  let inserted = 0;
+  try {
+    await client.query('BEGIN');
+    for (const r of results) {
+      await client.query(
+        `INSERT INTO student_scores (exam_round_id, exam_no, total_score, overall_rank, percentile, area_scores)
+         VALUES ($1,$2,$3,$4,$5,'{}'::jsonb)
+         ON CONFLICT (exam_round_id, exam_no) DO UPDATE SET
+           total_score=$3, overall_rank=$4, percentile=$5, computed_at=now()`,
+        [examRoundId, r.examNo, r.totalScore, r.overallRank, r.percentile]
+      );
+      inserted++;
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ examRoundId, studentCount: inserted });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: 'DB 저장 실패: ' + err.message });
