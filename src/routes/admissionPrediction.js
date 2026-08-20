@@ -35,11 +35,11 @@ router.post('/admission-cases/upload', upload.single('file'), async (req, res) =
     for (const c of cases) {
       await client.query(
         `INSERT INTO admission_cases
-           (admission_year, univ_name, dept_name, admission_type, result_type, real_name, student_external_id, source_campus, note)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           (admission_year, univ_name, dept_name, admission_type, result_type, real_name, student_external_id, exam_no, source_campus, note)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          ON CONFLICT (admission_year, univ_name, dept_name, student_external_id, admission_type)
-         DO UPDATE SET result_type=$5, real_name=$6, source_campus=$8, note=$9`,
-        [admissionYear, c.univName, c.deptName, c.admissionType, c.resultType, c.realName, c.studentExternalId, c.sourceCampus, c.note]
+         DO UPDATE SET result_type=$5, real_name=$6, exam_no=COALESCE($8, admission_cases.exam_no), source_campus=$9, note=$10`,
+        [admissionYear, c.univName, c.deptName, c.admissionType, c.resultType, c.realName, c.studentExternalId, c.examNo, c.sourceCampus, c.note]
       );
       inserted++;
     }
@@ -130,18 +130,28 @@ router.post('/external-mock-rounds/:id/upload', upload.single('file'), async (re
     for (const s of scores) {
       await client.query(
         `INSERT INTO external_mock_scores
-           (round_id, student_external_id, real_name, subject, admission_type, track, campus_name, class_name,
+           (round_id, student_external_id, exam_no, real_name, subject, admission_type, track, campus_name, class_name,
             raw_score, percentile, overall_rank, class_rank, class_applicants, track_rank, track_applicants,
             class_avg, track_avg, top30_class_avg, top30_track_avg)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
          ON CONFLICT (round_id, student_external_id, subject) DO UPDATE SET
-           real_name=$3, admission_type=$5, track=$6, campus_name=$7, class_name=$8,
-           raw_score=$9, percentile=$10, overall_rank=$11, class_rank=$12, class_applicants=$13,
-           track_rank=$14, track_applicants=$15, class_avg=$16, track_avg=$17, top30_class_avg=$18, top30_track_avg=$19`,
-        [roundId, s.studentExternalId, s.realName, s.subject, s.admissionType, s.track, s.campusName, s.className,
+           exam_no=COALESCE($3, external_mock_scores.exam_no), real_name=$4, admission_type=$6, track=$7, campus_name=$8, class_name=$9,
+           raw_score=$10, percentile=$11, overall_rank=$12, class_rank=$13, class_applicants=$14,
+           track_rank=$15, track_applicants=$16, class_avg=$17, track_avg=$18, top30_class_avg=$19, top30_track_avg=$20`,
+        [roundId, s.studentExternalId, s.examNo, s.realName, s.subject, s.admissionType, s.track, s.campusName, s.className,
           s.rawScore, s.percentile, s.overallRank, s.classRank, s.classApplicants, s.trackRank, s.trackApplicants,
           s.classAvg, s.trackAvg, s.top30ClassAvg, s.top30TrackAvg]
       );
+      // 수험번호가 같이 올라오면 아이디<->수험번호 매핑도 같이 갱신해서, 나중에 수험번호가 없는
+      // 다른 업로드에서도 이 학생을 계속 찾을 수 있게 해둔다.
+      if (s.examNo && s.studentExternalId) {
+        await client.query(
+          `INSERT INTO student_external_id_map (exam_no, student_external_id, real_name, updated_at)
+           VALUES ($1,$2,$3, now())
+           ON CONFLICT (exam_no) DO UPDATE SET student_external_id=$2, real_name=$3, updated_at=now()`,
+          [s.examNo, s.studentExternalId, s.realName]
+        );
+      }
       inserted++;
     }
     await client.query('COMMIT');
@@ -157,7 +167,8 @@ router.post('/external-mock-rounds/:id/upload', upload.single('file'), async (re
 // ---------- 합격생 분포 비교 ----------
 
 // 대학/학과 기준 합격생들의 (가장 최근 회차) 외부 모의고사 성적 분포.
-// exam_no를 같이 넘기면, 그 학생(수험번호 -> 아이디 매핑)의 최근 성적도 같이 반환해서 비교할 수 있게 한다.
+// 합격자 사례에 수험번호가 있으면 그걸로 바로 매칭하고, 없으면 아이디로 매칭한다.
+// exam_no 쿼리파라미터를 같이 넘기면, 그 학생의 최근 성적도 같이 반환해서 비교할 수 있게 한다.
 router.get('/distribution', async (req, res) => {
   const { univ_name, dept_name, exam_no } = req.query;
   if (!univ_name || !dept_name) {
@@ -165,28 +176,34 @@ router.get('/distribution', async (req, res) => {
   }
 
   const { rows: cases } = await db.query(
-    `SELECT id, real_name, student_external_id, admission_type, result_type, admission_year
-     FROM admission_cases WHERE univ_name=$1 AND dept_name=$2 AND student_external_id IS NOT NULL`,
+    `SELECT id, real_name, student_external_id, exam_no, admission_type, result_type, admission_year
+     FROM admission_cases WHERE univ_name=$1 AND dept_name=$2
+       AND (student_external_id IS NOT NULL OR exam_no IS NOT NULL)`,
     [univ_name, dept_name]
   );
 
-  const externalIds = [...new Set(cases.map(c => c.student_external_id))];
+  const examNosFromCases = [...new Set(cases.map(c => c.exam_no).filter(Boolean))];
+  const externalIdsFromCases = [...new Set(cases.map(c => c.student_external_id).filter(Boolean))];
+  const matchedStudentKeys = new Set(cases.map(c => c.exam_no || c.student_external_id).filter(Boolean));
+
   let scoreRows = [];
-  if (externalIds.length > 0) {
+  if (examNosFromCases.length > 0 || externalIdsFromCases.length > 0) {
     const { rows } = await db.query(
-      `SELECT s.student_external_id, s.subject, s.percentile, s.raw_score, r.exam_year, r.exam_month
+      `SELECT s.student_external_id, s.exam_no, s.subject, s.percentile, s.raw_score, r.exam_year, r.exam_month
        FROM external_mock_scores s
        JOIN external_mock_rounds r ON r.id = s.round_id
-       WHERE s.student_external_id = ANY($1::text[])`,
-      [externalIds]
+       WHERE s.exam_no = ANY($1::text[]) OR s.student_external_id = ANY($2::text[])`,
+      [examNosFromCases, externalIdsFromCases]
     );
     scoreRows = rows;
   }
 
   // 학생별로 과목마다 "가장 최근 회차" 점수 하나만 남긴다 (JS에서 처리 — 복잡한 중첩 SQL 대신).
-  const latestByStudentSubject = new Map(); // key: externalId|subject -> row
+  // 학생 식별은 수험번호가 있으면 수험번호, 없으면 아이디를 키로 쓴다.
+  const latestByStudentSubject = new Map(); // key: (examNo||externalId)|subject -> row
   for (const r of scoreRows) {
-    const key = r.student_external_id + '|' + r.subject;
+    const studentKey = r.exam_no || r.student_external_id;
+    const key = studentKey + '|' + r.subject;
     const prev = latestByStudentSubject.get(key);
     if (!prev || r.exam_year > prev.exam_year || (r.exam_year === prev.exam_year && r.exam_month > prev.exam_month)) {
       latestByStudentSubject.set(key, r);
@@ -215,19 +232,40 @@ router.get('/distribution', async (req, res) => {
 
   let me = null;
   if (exam_no) {
-    const { rows: mapRows } = await db.query(
-      'SELECT student_external_id FROM student_external_id_map WHERE exam_no=$1', [exam_no]
+    // 1순위: 이 학생의 외부 모의고사 성적에 수험번호가 직접 찍혀 있으면 바로 사용 (아이디 매핑 불필요).
+    const { rows: directScoreRows } = await db.query(
+      `SELECT s.student_external_id, s.subject, s.percentile, s.raw_score, r.exam_year, r.exam_month
+       FROM external_mock_scores s
+       JOIN external_mock_rounds r ON r.id = s.round_id
+       WHERE s.exam_no = $1
+       ORDER BY r.exam_year DESC, r.exam_month DESC`,
+      [exam_no]
     );
-    if (mapRows.length > 0) {
-      const myExternalId = mapRows[0].student_external_id;
-      const { rows: myScoreRows } = await db.query(
-        `SELECT s.subject, s.percentile, s.raw_score, r.exam_year, r.exam_month
-         FROM external_mock_scores s
-         JOIN external_mock_rounds r ON r.id = s.round_id
-         WHERE s.student_external_id = $1
-         ORDER BY r.exam_year DESC, r.exam_month DESC`,
-        [myExternalId]
+
+    let myScoreRows = directScoreRows;
+    let myExternalId = directScoreRows[0] ? directScoreRows[0].student_external_id : null;
+
+    // 2순위: 수험번호로 직접 매칭되는 성적이 없으면, 예전 방식대로 명단 업로드 때 쌓인
+    // 수험번호<->아이디 매핑을 거쳐서 찾는다 (하위 호환).
+    if (myScoreRows.length === 0) {
+      const { rows: mapRows } = await db.query(
+        'SELECT student_external_id FROM student_external_id_map WHERE exam_no=$1', [exam_no]
       );
+      if (mapRows.length > 0) {
+        myExternalId = mapRows[0].student_external_id;
+        const { rows } = await db.query(
+          `SELECT s.subject, s.percentile, s.raw_score, r.exam_year, r.exam_month
+           FROM external_mock_scores s
+           JOIN external_mock_rounds r ON r.id = s.round_id
+           WHERE s.student_external_id = $1
+           ORDER BY r.exam_year DESC, r.exam_month DESC`,
+          [myExternalId]
+        );
+        myScoreRows = rows;
+      }
+    }
+
+    if (myScoreRows.length > 0) {
       const myLatestBySubject = new Map();
       for (const r of myScoreRows) {
         if (!myLatestBySubject.has(r.subject)) myLatestBySubject.set(r.subject, r);
@@ -240,7 +278,7 @@ router.get('/distribution', async (req, res) => {
         }))
       };
     } else {
-      me = { studentExternalId: null, subjects: [], note: '이 수험번호에 매핑된 외부 아이디가 없습니다.' };
+      me = { studentExternalId: null, subjects: [], note: '이 수험번호로 매칭되는 외부 모의고사 성적이 없습니다 (수험번호가 파일에 없거나, 명단 업로드로 아이디 매핑이 안 돼 있음).' };
     }
   }
 
@@ -248,7 +286,7 @@ router.get('/distribution', async (req, res) => {
     univName: univ_name,
     deptName: dept_name,
     caseCount: cases.length,
-    matchedStudentCount: externalIds.length,
+    matchedStudentCount: matchedStudentKeys.size,
     distribution,
     me
   });

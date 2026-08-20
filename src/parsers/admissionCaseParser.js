@@ -18,7 +18,7 @@ function findCol(row, labelVariants, maxCol = 40) {
 function parseAdmissionCaseRows(rows) {
   let headerRow = -1;
   let univCol = null, deptCol = null, typeCol = null, resultCol = null, scoreCol = null,
-    nameCol = null, idCol = null, campusCol = null, noteCol = null;
+    nameCol = null, idCol = null, examNoCol = null, campusCol = null, noteCol = null;
 
   for (let r = 0; r < Math.min(5, rows.length); r++) {
     const row = rows[r] || [];
@@ -32,6 +32,7 @@ function parseAdmissionCaseRows(rows) {
       scoreCol = findCol(row, ['합격성적', '합격점수']);
       nameCol = findCol(row, ['이름']);
       idCol = findCol(row, ['아이디', 'ID']);
+      examNoCol = findCol(row, ['수험번호']); // 있으면 아이디 매핑 없이 바로 수험번호로 매칭 (선택 컬럼)
       campusCol = findCol(row, ['수강캠퍼스', '캠퍼스명']);
       noteCol = findCol(row, ['특이사항']);
       break;
@@ -56,6 +57,7 @@ function parseAdmissionCaseRows(rows) {
       admissionScore: scoreCol !== null ? (String(row[scoreCol] ?? '').trim() || null) : null,
       realName: nameCol !== null ? (String(row[nameCol] ?? '').trim() || null) : null,
       studentExternalId: idCol !== null ? (String(row[idCol] ?? '').trim() || null) : null,
+      examNo: examNoCol !== null ? (String(row[examNoCol] ?? '').trim() || null) : null,
       sourceCampus: campusCol !== null ? (String(row[campusCol] ?? '').trim() || null) : null,
       note: noteCol !== null ? (String(row[noteCol] ?? '').trim() || null) : null
     });

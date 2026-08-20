@@ -18,6 +18,142 @@ router.get('/published-rounds', async (req, res) => {
   res.json(rows);
 });
 
+// 이 수험번호의 외부 모의고사(편입모의고사 등) 성적 전체 행을 가져온다.
+// 성적 파일에 수험번호가 직접 있으면 그걸로 바로 찾고, 없으면 명단 업로드로 쌓인 아이디 매핑을 거친다.
+async function fetchExternalMockRows(examNo) {
+  const { rows: directRows } = await db.query(
+    `SELECT s.subject, s.raw_score, s.percentile, s.overall_rank, s.class_rank, s.class_applicants,
+            s.track_rank, s.track_applicants, r.exam_year, r.exam_month, r.label
+     FROM external_mock_scores s
+     JOIN external_mock_rounds r ON r.id = s.round_id
+     WHERE s.exam_no = $1
+     ORDER BY r.exam_year DESC, r.exam_month DESC, s.subject`,
+    [examNo]
+  );
+  if (directRows.length > 0) return directRows;
+
+  const { rows: mapRows } = await db.query('SELECT student_external_id FROM student_external_id_map WHERE exam_no=$1', [examNo]);
+  if (mapRows.length === 0) return [];
+
+  const { rows } = await db.query(
+    `SELECT s.subject, s.raw_score, s.percentile, s.overall_rank, s.class_rank, s.class_applicants,
+            s.track_rank, s.track_applicants, r.exam_year, r.exam_month, r.label
+     FROM external_mock_scores s
+     JOIN external_mock_rounds r ON r.id = s.round_id
+     WHERE s.student_external_id = $1
+     ORDER BY r.exam_year DESC, r.exam_month DESC, s.subject`,
+    [mapRows[0].student_external_id]
+  );
+  return rows;
+}
+
+// 학생 포털 - 외부 모의고사(편입모의고사 등) 성적 목록 (로그인 불필요)
+router.get('/external-mock-scores', async (req, res) => {
+  const { exam_no } = req.query;
+  if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
+  const rows = await fetchExternalMockRows(exam_no);
+  res.json(rows.map(r => ({
+    subject: r.subject, rawScore: r.raw_score, percentile: r.percentile,
+    overallRank: r.overall_rank, classRank: r.class_rank, classApplicants: r.class_applicants,
+    trackRank: r.track_rank, trackApplicants: r.track_applicants,
+    examYear: r.exam_year, examMonth: r.exam_month, label: r.label
+  })));
+});
+
+// 학생 포털 - 합격생 DB 대비 위치 비교 (로그인 불필요)
+// 이 학생의 외부 모의고사 성적(과목별 최신)을, 합격자명단에 등장한 대학/학과별 합격생들의
+// 같은 과목 성적 분포와 비교한다. 개인정보 보호를 위해 합격생 개개인의 이름/아이디는 절대 반환하지 않고
+// 대학/학과 단위로 집계된 표본수·최저·평균·최고 백분위만 반환한다.
+router.get('/admission-comparison', async (req, res) => {
+  const { exam_no } = req.query;
+  if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
+
+  const myRows = await fetchExternalMockRows(exam_no);
+  const myScoresBySubject = new Map();
+  for (const r of myRows) {
+    if (!myScoresBySubject.has(r.subject)) {
+      myScoresBySubject.set(r.subject, { percentile: r.percentile, rawScore: r.raw_score, examYear: r.exam_year, examMonth: r.exam_month });
+    }
+  }
+
+  if (myScoresBySubject.size === 0) {
+    return res.json({ myScores: [], depts: [], note: '이 수험번호로 매칭되는 외부 모의고사 성적이 없어 비교할 수 없습니다.' });
+  }
+
+  const { rows: cases } = await db.query(
+    `SELECT univ_name, dept_name, student_external_id, exam_no
+     FROM admission_cases WHERE student_external_id IS NOT NULL OR exam_no IS NOT NULL`
+  );
+  const examNos = [...new Set(cases.map(c => c.exam_no).filter(Boolean))];
+  const externalIds = [...new Set(cases.map(c => c.student_external_id).filter(Boolean))];
+
+  let scoreRows = [];
+  if (examNos.length > 0 || externalIds.length > 0) {
+    const { rows } = await db.query(
+      `SELECT s.student_external_id, s.exam_no, s.subject, s.percentile, r.exam_year, r.exam_month
+       FROM external_mock_scores s
+       JOIN external_mock_rounds r ON r.id = s.round_id
+       WHERE s.exam_no = ANY($1::text[]) OR s.student_external_id = ANY($2::text[])`,
+      [examNos, externalIds]
+    );
+    scoreRows = rows;
+  }
+
+  const latestByIdentitySubject = new Map();
+  for (const r of scoreRows) {
+    const idKey = r.exam_no || r.student_external_id;
+    const key = idKey + '|' + r.subject;
+    const prev = latestByIdentitySubject.get(key);
+    if (!prev || r.exam_year > prev.exam_year || (r.exam_year === prev.exam_year && r.exam_month > prev.exam_month)) {
+      latestByIdentitySubject.set(key, r);
+    }
+  }
+
+  const mySubjects = [...myScoresBySubject.keys()];
+  const byDept = new Map(); // key: univ|||dept -> { univName, deptName, subjectValues: { subject: [percentile,...] } }
+  for (const c of cases) {
+    const idKey = c.exam_no || c.student_external_id;
+    if (!idKey) continue;
+    const deptKey = c.univ_name + '|||' + c.dept_name;
+    for (const subject of mySubjects) {
+      const scoreRow = latestByIdentitySubject.get(idKey + '|' + subject);
+      if (!scoreRow || scoreRow.percentile === null || scoreRow.percentile === undefined) continue;
+      if (!byDept.has(deptKey)) byDept.set(deptKey, { univName: c.univ_name, deptName: c.dept_name, subjectValues: {} });
+      const bucket = byDept.get(deptKey);
+      if (!bucket.subjectValues[subject]) bucket.subjectValues[subject] = [];
+      bucket.subjectValues[subject].push(Number(scoreRow.percentile));
+    }
+  }
+
+  const depts = [];
+  for (const bucket of byDept.values()) {
+    const distribution = Object.entries(bucket.subjectValues).map(([subject, values]) => {
+      values.sort((a, b) => a - b);
+      const n = values.length;
+      const sum = values.reduce((a, b) => a + b, 0);
+      const mine = myScoresBySubject.get(subject);
+      return {
+        subject, n,
+        minPercentile: values[0], avgPercentile: Math.round((sum / n) * 10) / 10, maxPercentile: values[n - 1],
+        myPercentile: mine ? mine.percentile : null
+      };
+    });
+    depts.push({ univName: bucket.univName, deptName: bucket.deptName, distribution });
+  }
+
+  // 표본이 많은(참고 가치가 높은) 순으로 정렬
+  depts.sort((a, b) => {
+    const aN = Math.max(...a.distribution.map(d => d.n));
+    const bN = Math.max(...b.distribution.map(d => d.n));
+    return bN - aN;
+  });
+
+  res.json({
+    myScores: [...myScoresBySubject.entries()].map(([subject, v]) => ({ subject, ...v })),
+    depts
+  });
+});
+
 // 자가채점용 문항 목록 (정답 제외, 문항번호/배점/파트만)
 router.get('/rounds/:id/questions', async (req, res) => {
   const { rows } = await db.query(

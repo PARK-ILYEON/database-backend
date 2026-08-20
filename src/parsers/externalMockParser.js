@@ -37,6 +37,7 @@ function parseExternalMockRows(rows, subject) {
   const row0 = rows[0] || [];
 
   const idCol = findCol(row0, ['아이디', 'ID']);
+  const examNoCol = findCol(row0, ['수험번호']); // 있으면 아이디 매핑 없이 바로 수험번호로 매칭할 수 있다 (선택 컬럼)
   const nameCol = findCol(row0, ['이름']);
   const admissionTypeCol = findCol(row0, ['편입']);
   const trackCol = findCol(row0, ['계열']);
@@ -70,6 +71,7 @@ function parseExternalMockRows(rows, subject) {
 
     scores.push({
       studentExternalId: externalId,
+      examNo: examNoCol !== null ? (String(row[examNoCol] ?? '').trim() || null) : null,
       realName: String(row[nameCol] ?? '').trim() || null,
       subject,
       admissionType: admissionTypeCol !== null ? (String(row[admissionTypeCol] ?? '').trim() || null) : null,

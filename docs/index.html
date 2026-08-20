@@ -199,6 +199,8 @@ var state = {
   pvSubtab: 'report', // report | wrong | univ | trend
   pvReportRoundId: null,
   pvDeptTrackRankCache: {},
+  pvExternalMock: null,
+  pvAdmissionCompare: null,
   pvWrong: null,
   pvDeptRank: null,
   pvUnivMatches: null,
@@ -375,6 +377,12 @@ function apiPortalWrongQuestions(examNo){
 }
 function apiPortalDeptRank(examNo){
   return apiFetch('/api/portal/dept-rank?exam_no=' + encodeURIComponent(examNo));
+}
+function apiPortalExternalMockScores(examNo){
+  return apiFetch('/api/portal/external-mock-scores?exam_no=' + encodeURIComponent(examNo));
+}
+function apiPortalAdmissionComparison(examNo){
+  return apiFetch('/api/portal/admission-comparison?exam_no=' + encodeURIComponent(examNo));
 }
 function apiPortalDeptTrackRank(examRoundId, examNo){
   return apiFetch('/api/portal/rounds/' + examRoundId + '/dept-track-rank?exam_no=' + encodeURIComponent(examNo));
@@ -1096,13 +1104,9 @@ function renderPortalLiveLookup(){
     + '<button class="btn secondary" data-act="pvBack">다른 수험번호로 조회</button></div>';
 
   var rows = state.pvLookupResults || [];
-  if (rows.length===0){
-    html += '<div class="card"><div class="empty">발행된 회차 중 이 수험번호로 채점된 성적이 없습니다. (아직 관리자가 발행하지 않았거나, 명단에 등록되지 않았을 수 있습니다)</div></div>';
-    return html;
-  }
 
   html += '<div class="subtabs">';
-  [['report','성적표'],['wrong','누적오답노트'],['univ','대학 매칭'],['trend','역대 성적 비교']].forEach(function(t){
+  [['report','성적표'],['wrong','누적오답노트'],['univ','대학 매칭'],['trend','역대 성적 비교'],['emock','외부 모의고사'],['admission','합격생 비교']].forEach(function(t){
     html += '<button data-act="pvSetSub" data-sub="'+t[0]+'" class="'+(state.pvSubtab===t[0]?'active':'')+'">'+t[1]+'</button>';
   });
   html += '</div>';
@@ -1110,7 +1114,72 @@ function renderPortalLiveLookup(){
   if (state.pvSubtab==='wrong') html += renderPvWrongTab();
   else if (state.pvSubtab==='univ') html += renderPvUnivTab();
   else if (state.pvSubtab==='trend') html += renderPvTrendTab(rows);
+  else if (state.pvSubtab==='emock') html += renderPvExternalMockTab();
+  else if (state.pvSubtab==='admission') html += renderPvAdmissionCompareTab();
   else html += renderPvReportTab(rows);
+  return html;
+}
+
+// 외부(편입모의고사 등) 모의고사 성적 목록 — 기존 회차관리(수험번호) 체계와 별개인 외부 데이터
+function renderPvExternalMockTab(){
+  var html = '<div class="card"><h3>외부 모의고사 성적 (편입모의고사 등)</h3>';
+  if (state.pvExternalMock===null){
+    html += '<div class="empty">불러오는 중입니다...</div></div>';
+    return html;
+  }
+  if (state.pvExternalMock.length===0){
+    html += '<div class="empty">매칭되는 외부 모의고사 성적이 없습니다. (수험번호가 성적 파일에 없거나, 명단 업로드로 아이디 매핑이 안 돼 있을 수 있습니다)</div></div>';
+    return html;
+  }
+  html += '<table><thead><tr><th>연도</th><th>월</th><th>과목</th><th>원점수</th><th>백분위</th><th>전체 석차</th><th>반 석차/응시</th><th>계열 석차/응시</th></tr></thead><tbody>';
+  state.pvExternalMock.forEach(function(r){
+    html += '<tr><td>'+r.examYear+'</td><td>'+r.examMonth+'</td><td>'+esc(r.subject)+'</td>'
+      + '<td>'+(r.rawScore!==null&&r.rawScore!==undefined?r.rawScore:'-')+'</td>'
+      + '<td>'+(r.percentile!==null&&r.percentile!==undefined?r.percentile+'%':'-')+'</td>'
+      + '<td>'+(r.overallRank!==null&&r.overallRank!==undefined?r.overallRank:'-')+'</td>'
+      + '<td>'+(r.classRank!==null&&r.classRank!==undefined?r.classRank+' / '+r.classApplicants:'-')+'</td>'
+      + '<td>'+(r.trackRank!==null&&r.trackRank!==undefined?r.trackRank+' / '+r.trackApplicants:'-')+'</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// 합격생 DB 대비 위치 비교 — 합격자명단에 있는 대학/학과별로, 그 학과 합격생들의 외부 모의고사
+// 성적 분포(과목별 표본수/최저/평균/최고 백분위)와 내 성적을 나란히 보여준다. 확률이 아니라 참고용.
+function renderPvAdmissionCompareTab(){
+  var html = '<div class="card"><h3>합격생 성적 분포 비교 (참고용)</h3>';
+  html += '<div class="note">확률 예측이 아니라, 과거 합격생들의 외부 모의고사 성적 분포 대비 내 위치를 보여주는 참고 자료입니다.</div>';
+  if (state.pvAdmissionCompare===null){
+    html += '<div class="empty" style="margin-top:10px">불러오는 중입니다...</div></div>';
+    return html;
+  }
+  var d = state.pvAdmissionCompare;
+  if (d.note){
+    html += '<div class="empty" style="margin-top:10px">'+esc(d.note)+'</div></div>';
+    return html;
+  }
+  if (!d.depts || d.depts.length===0){
+    html += '<div class="empty" style="margin-top:10px">비교할 수 있는 합격생 데이터가 아직 없습니다.</div></div>';
+    return html;
+  }
+  html += '<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>대학</th><th>학과</th><th>과목</th><th>표본수</th><th>합격생 최저~최고 백분위</th><th>합격생 평균</th><th>내 백분위</th><th>판단</th></tr></thead><tbody>';
+  d.depts.forEach(function(dept){
+    dept.distribution.forEach(function(row){
+      var judge = '-';
+      var judgeClass = '';
+      if (row.myPercentile!==null && row.myPercentile!==undefined){
+        if (Number(row.myPercentile) >= Number(row.avgPercentile)){ judge = '평균 이상'; judgeClass='pos'; }
+        else { judge = '평균 이하'; judgeClass='neg'; }
+      }
+      html += '<tr><td>'+esc(dept.univName)+'</td><td>'+esc(dept.deptName)+'</td><td>'+esc(row.subject)+'</td>'
+        + '<td>'+row.n+'</td>'
+        + '<td>'+row.minPercentile+'% ~ '+row.maxPercentile+'%</td>'
+        + '<td>'+row.avgPercentile+'%</td>'
+        + '<td>'+(row.myPercentile!==null&&row.myPercentile!==undefined?row.myPercentile+'%':'-')+'</td>'
+        + '<td><span class="'+judgeClass+'">'+judge+'</span></td></tr>';
+    });
+  });
+  html += '</tbody></table></div></div>';
   return html;
 }
 
@@ -1689,7 +1758,7 @@ document.addEventListener('click', function(e){
     setState({
       pvStage:'entry', pvExamNo:'', pvLookupResults:null, pvError:'',
       pvSelfName:'', pvSelfExamNo:null, pvSelfRoundId:null, pvSelfQuestions:null, pvSelfAnswers:{}, pvSelfResult:null,
-      pvSubtab:'report', pvReportRoundId:null, pvWrong:null, pvDeptRank:null, pvUnivMatches:null, pvDeptTrackRankCache:{}
+      pvSubtab:'report', pvReportRoundId:null, pvWrong:null, pvDeptRank:null, pvUnivMatches:null, pvDeptTrackRankCache:{}, pvExternalMock:null, pvAdmissionCompare:null
     });
   }
   else if (act==='pvToggleAnswers'){
@@ -1734,6 +1803,20 @@ document.addEventListener('click', function(e){
         }
       }).catch(function(err){
         setState({pvDeptRank: false});
+      });
+    }
+    if (pvSub==='emock' && state.pvExternalMock===null){
+      apiPortalExternalMockScores(state.pvExamNo).then(function(rows){
+        setState({pvExternalMock: rows});
+      }).catch(function(err){
+        setState({pvExternalMock: []});
+      });
+    }
+    if (pvSub==='admission' && state.pvAdmissionCompare===null){
+      apiPortalAdmissionComparison(state.pvExamNo).then(function(d){
+        setState({pvAdmissionCompare: d});
+      }).catch(function(err){
+        setState({pvAdmissionCompare: { depts: [], note: err.message }});
       });
     }
   }
