@@ -116,7 +116,9 @@ function parseExternalMockWorkbook(workbook) {
   if (allScores.length === 0) {
     throw new Error('워크북의 어느 시트에서도 성적 데이터를 인식하지 못했습니다. (' + errors.join(' / ') + ')');
   }
-  return allScores;
+  // 일부 시트만 실패한 경우(예: 영어는 인식됐지만 수학 시트는 라벨이 달라 인식 실패)에도
+  // 조용히 무시하지 않고 warnings로 알려준다.
+  return { scores: allScores, warnings: errors };
 }
 
 module.exports = { parseExternalMockRows, parseExternalMockWorkbook };

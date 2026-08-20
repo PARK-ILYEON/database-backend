@@ -1911,7 +1911,13 @@ document.addEventListener('change', function(e){
     setState({liveLoading:true, admissionMessage:'업로드 중... ('+emFile.name+')', admissionMessageType:'info'});
     apiExternalMockRoundUpload(emRoundId, emFile).then(function(result){
       return apiExternalMockRoundsList().then(function(list){
-        setState({liveLoading:false, externalMockRounds:list, admissionMessage:'모의고사 성적 '+result.scoreCount+'건 업로드 완료', admissionMessageType:'ok'});
+        var msg = '모의고사 성적 '+result.scoreCount+'건 업로드 완료';
+        var msgType = 'ok';
+        if (result.warnings && result.warnings.length){
+          msg += ' (일부 시트 인식 실패: ' + result.warnings.join(' / ') + ')';
+          msgType = 'error';
+        }
+        setState({liveLoading:false, externalMockRounds:list, admissionMessage:msg, admissionMessageType:msgType});
       });
     }).catch(function(err){
       setState({liveLoading:false, admissionMessage:'업로드 실패: ' + err.message, admissionMessageType:'error'});

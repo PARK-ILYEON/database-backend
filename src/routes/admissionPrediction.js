@@ -115,10 +115,12 @@ router.post('/external-mock-rounds/:id/upload', upload.single('file'), async (re
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
   const roundId = req.params.id;
 
-  let scores;
+  let scores, warnings;
   try {
     const wb = readWorkbookRobust(req.file.buffer);
-    scores = parseExternalMockWorkbook(wb);
+    const result = parseExternalMockWorkbook(wb);
+    scores = result.scores;
+    warnings = result.warnings;
   } catch (err) {
     return res.status(422).json({ error: '모의고사 결과 파싱 실패: ' + err.message });
   }
@@ -155,7 +157,7 @@ router.post('/external-mock-rounds/:id/upload', upload.single('file'), async (re
       inserted++;
     }
     await client.query('COMMIT');
-    res.status(201).json({ roundId, scoreCount: inserted });
+    res.status(201).json({ roundId, scoreCount: inserted, warnings: warnings && warnings.length ? warnings : undefined });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: 'DB 저장 실패: ' + err.message });
