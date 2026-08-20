@@ -1148,38 +1148,47 @@ function renderPvExternalMockTab(){
 // 성적 분포(과목별 표본수/최저/평균/최고 백분위)와 내 성적을 나란히 보여준다. 확률이 아니라 참고용.
 function renderPvAdmissionCompareTab(){
   var html = '<div class="card"><h3>합격생 성적 분포 비교 (참고용)</h3>';
-  html += '<div class="note">확률 예측이 아니라, 과거 합격생들의 외부 모의고사 성적 분포 대비 내 위치를 보여주는 참고 자료입니다.</div>';
+  html += '<div class="note">확률 예측이 아니라, 내가 응시한 달의 성적을 1년 전 같은 달 시점 합격생들의 성적 분포와 비교하는 참고 자료입니다.</div>';
   if (state.pvAdmissionCompare===null){
     html += '<div class="empty" style="margin-top:10px">불러오는 중입니다...</div></div>';
     return html;
   }
   var d = state.pvAdmissionCompare;
-  if (d.note){
+  if (d.note && (!d.monthly || d.monthly.length===0)){
     html += '<div class="empty" style="margin-top:10px">'+esc(d.note)+'</div></div>';
     return html;
   }
-  if (!d.depts || d.depts.length===0){
+  if (!d.monthly || d.monthly.length===0){
     html += '<div class="empty" style="margin-top:10px">비교할 수 있는 합격생 데이터가 아직 없습니다.</div></div>';
     return html;
   }
-  html += '<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>대학</th><th>학과</th><th>과목</th><th>표본수</th><th>합격생 최저~최고 백분위</th><th>합격생 평균</th><th>내 백분위</th><th>판단</th></tr></thead><tbody>';
-  d.depts.forEach(function(dept){
-    dept.distribution.forEach(function(row){
-      var judge = '-';
-      var judgeClass = '';
-      if (row.myPercentile!==null && row.myPercentile!==undefined){
-        if (Number(row.myPercentile) >= Number(row.avgPercentile)){ judge = '평균 이상'; judgeClass='pos'; }
-        else { judge = '평균 이하'; judgeClass='neg'; }
-      }
-      html += '<tr><td>'+esc(dept.univName)+'</td><td>'+esc(dept.deptName)+'</td><td>'+esc(row.subject)+'</td>'
-        + '<td>'+row.n+'</td>'
-        + '<td>'+row.minPercentile+'% ~ '+row.maxPercentile+'%</td>'
-        + '<td>'+row.avgPercentile+'%</td>'
-        + '<td>'+(row.myPercentile!==null&&row.myPercentile!==undefined?row.myPercentile+'%':'-')+'</td>'
-        + '<td><span class="'+judgeClass+'">'+judge+'</span></td></tr>';
+  d.monthly.forEach(function(month){
+    html += '<div style="margin-top:16px"><div style="font-weight:600;margin-bottom:6px">'
+      + month.examYear+'년 '+month.examMonth+'월 응시 성적 vs '+month.compareYear+'년 '+month.compareMonth+'월 시점 합격생</div>';
+    if (!month.depts || month.depts.length===0){
+      html += '<div class="empty">'+esc(month.note || '비교할 수 있는 합격생 데이터가 없습니다.')+'</div></div>';
+      return;
+    }
+    html += '<div class="table-wrap"><table><thead><tr><th>대학</th><th>학과</th><th>과목</th><th>표본수</th><th>합격생 최저~최고 백분위</th><th>합격생 평균</th><th>내 백분위</th><th>판단</th></tr></thead><tbody>';
+    month.depts.forEach(function(dept){
+      dept.distribution.forEach(function(row){
+        var judge = '-';
+        var judgeClass = '';
+        if (row.myPercentile!==null && row.myPercentile!==undefined){
+          if (Number(row.myPercentile) >= Number(row.avgPercentile)){ judge = '평균 이상'; judgeClass='pos'; }
+          else { judge = '평균 이하'; judgeClass='neg'; }
+        }
+        html += '<tr><td>'+esc(dept.univName)+'</td><td>'+esc(dept.deptName)+'</td><td>'+esc(row.subject)+'</td>'
+          + '<td>'+row.n+'</td>'
+          + '<td>'+row.minPercentile+'% ~ '+row.maxPercentile+'%</td>'
+          + '<td>'+row.avgPercentile+'%</td>'
+          + '<td>'+(row.myPercentile!==null&&row.myPercentile!==undefined?row.myPercentile+'%':'-')+'</td>'
+          + '<td><span class="'+judgeClass+'">'+judge+'</span></td></tr>';
+      });
     });
+    html += '</tbody></table></div></div>';
   });
-  html += '</tbody></table></div></div>';
+  html += '</div>';
   return html;
 }
 

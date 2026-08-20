@@ -60,53 +60,15 @@ router.get('/external-mock-scores', async (req, res) => {
   })));
 });
 
-// 학생 포털 - 합격생 DB 대비 위치 비교 (로그인 불필요)
-// 이 학생의 외부 모의고사 성적(과목별 최신)을, 합격자명단에 등장한 대학/학과별 합격생들의
-// 같은 과목 성적 분포와 비교한다. 개인정보 보호를 위해 합격생 개개인의 이름/아이디는 절대 반환하지 않고
-// 대학/학과 단위로 집계된 표본수·최저·평균·최고 백분위만 반환한다.
-router.get('/admission-comparison', async (req, res) => {
-  const { exam_no } = req.query;
-  if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
-
-  const myRows = await fetchExternalMockRows(exam_no);
-  const myScoresBySubject = new Map();
-  for (const r of myRows) {
-    if (!myScoresBySubject.has(r.subject)) {
-      myScoresBySubject.set(r.subject, { percentile: r.percentile, rawScore: r.raw_score, examYear: r.exam_year, examMonth: r.exam_month });
-    }
-  }
-
-  if (myScoresBySubject.size === 0) {
-    return res.json({ myScores: [], depts: [], note: '이 수험번호로 매칭되는 외부 모의고사 성적이 없어 비교할 수 없습니다.' });
-  }
-
-  const { rows: cases } = await db.query(
-    `SELECT univ_name, dept_name, student_external_id, exam_no
-     FROM admission_cases WHERE student_external_id IS NOT NULL OR exam_no IS NOT NULL`
-  );
-  const examNos = [...new Set(cases.map(c => c.exam_no).filter(Boolean))];
-  const externalIds = [...new Set(cases.map(c => c.student_external_id).filter(Boolean))];
-
-  let scoreRows = [];
-  if (examNos.length > 0 || externalIds.length > 0) {
-    const { rows } = await db.query(
-      `SELECT s.student_external_id, s.exam_no, s.subject, s.percentile, r.exam_year, r.exam_month
-       FROM external_mock_scores s
-       JOIN external_mock_rounds r ON r.id = s.round_id
-       WHERE s.exam_no = ANY($1::text[]) OR s.student_external_id = ANY($2::text[])`,
-      [examNos, externalIds]
-    );
-    scoreRows = rows;
-  }
-
-  const latestByIdentitySubject = new Map();
+// 합격생 성적 분포(대학/학과 단위 표본수·최저·평균·최고 백분위)를 계산한다.
+// 개인정보 보호를 위해 합격생 개개인의 이름/아이디는 절대 반환하지 않는다.
+function buildAdmissionDepts(cases, scoreRows, compareYear, compareMonth, myScoresBySubject) {
+  const byIdentitySubject = new Map(); // idKey|subject -> percentile
   for (const r of scoreRows) {
+    if (r.exam_year !== compareYear || r.exam_month !== compareMonth) continue;
+    if (r.percentile === null || r.percentile === undefined) continue;
     const idKey = r.exam_no || r.student_external_id;
-    const key = idKey + '|' + r.subject;
-    const prev = latestByIdentitySubject.get(key);
-    if (!prev || r.exam_year > prev.exam_year || (r.exam_year === prev.exam_year && r.exam_month > prev.exam_month)) {
-      latestByIdentitySubject.set(key, r);
-    }
+    byIdentitySubject.set(idKey + '|' + r.subject, Number(r.percentile));
   }
 
   const mySubjects = [...myScoresBySubject.keys()];
@@ -116,12 +78,12 @@ router.get('/admission-comparison', async (req, res) => {
     if (!idKey) continue;
     const deptKey = c.univ_name + '|||' + c.dept_name;
     for (const subject of mySubjects) {
-      const scoreRow = latestByIdentitySubject.get(idKey + '|' + subject);
-      if (!scoreRow || scoreRow.percentile === null || scoreRow.percentile === undefined) continue;
+      const val = byIdentitySubject.get(idKey + '|' + subject);
+      if (val === undefined) continue;
       if (!byDept.has(deptKey)) byDept.set(deptKey, { univName: c.univ_name, deptName: c.dept_name, subjectValues: {} });
       const bucket = byDept.get(deptKey);
       if (!bucket.subjectValues[subject]) bucket.subjectValues[subject] = [];
-      bucket.subjectValues[subject].push(Number(scoreRow.percentile));
+      bucket.subjectValues[subject].push(val);
     }
   }
 
@@ -147,11 +109,71 @@ router.get('/admission-comparison', async (req, res) => {
     const bAvg = Math.max(...b.distribution.map(d => d.avgPercentile));
     return bAvg - aAvg;
   });
+  return depts;
+}
 
-  res.json({
-    myScores: [...myScoresBySubject.entries()].map(([subject, v]) => ({ subject, ...v })),
-    depts
+// 학생 포털 - 합격생 DB 대비 위치 비교 (로그인 불필요)
+// 이 학생이 응시한 "월"마다 따로, 같은 달(1년 전) 합격생들의 성적 분포와 비교한다.
+// (예: 올해 7월 성적 -> 작년 7월 합격생 성적과 비교. 합격자명단은 합격 전 준비 기간의
+//  성적으로 매칭돼야 의미가 있으므로, 최신 성적 1개만 보는 게 아니라 응시월별로 각각 비교한다.)
+router.get('/admission-comparison', async (req, res) => {
+  const { exam_no } = req.query;
+  if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
+
+  const myRows = await fetchExternalMockRows(exam_no);
+  if (myRows.length === 0) {
+    return res.json({ monthly: [], note: '이 수험번호로 매칭되는 외부 모의고사 성적이 없어 비교할 수 없습니다.' });
+  }
+
+  // 내 성적을 응시 (연도, 월)별로 묶는다 - 최신 것만이 아니라 응시한 모든 월을 각각 비교한다.
+  const monthKeys = [];
+  const myByMonth = new Map(); // key: year|month -> { examYear, examMonth, scoresBySubject: Map }
+  for (const r of myRows) {
+    const key = r.exam_year + '|' + r.exam_month;
+    if (!myByMonth.has(key)) {
+      myByMonth.set(key, { examYear: r.exam_year, examMonth: r.exam_month, scoresBySubject: new Map() });
+      monthKeys.push(key);
+    }
+    myByMonth.get(key).scoresBySubject.set(r.subject, { percentile: r.percentile, rawScore: r.raw_score });
+  }
+
+  const { rows: cases } = await db.query(
+    `SELECT univ_name, dept_name, student_external_id, exam_no
+     FROM admission_cases WHERE student_external_id IS NOT NULL OR exam_no IS NOT NULL`
+  );
+  const examNos = [...new Set(cases.map(c => c.exam_no).filter(Boolean))];
+  const externalIds = [...new Set(cases.map(c => c.student_external_id).filter(Boolean))];
+
+  let scoreRows = [];
+  if (examNos.length > 0 || externalIds.length > 0) {
+    const { rows } = await db.query(
+      `SELECT s.student_external_id, s.exam_no, s.subject, s.percentile, r.exam_year, r.exam_month
+       FROM external_mock_scores s
+       JOIN external_mock_rounds r ON r.id = s.round_id
+       WHERE s.exam_no = ANY($1::text[]) OR s.student_external_id = ANY($2::text[])`,
+      [examNos, externalIds]
+    );
+    scoreRows = rows;
+  }
+
+  const monthly = monthKeys.map(key => {
+    const m = myByMonth.get(key);
+    const compareYear = m.examYear - 1; // 작년 같은 달 합격생 성적과 비교
+    const depts = buildAdmissionDepts(cases, scoreRows, compareYear, m.examMonth, m.scoresBySubject);
+    return {
+      examYear: m.examYear,
+      examMonth: m.examMonth,
+      compareYear,
+      compareMonth: m.examMonth,
+      myScores: [...m.scoresBySubject.entries()].map(([subject, v]) => ({ subject, ...v })),
+      depts,
+      note: depts.length === 0 ? `${compareYear}년 ${m.examMonth}월 시점 합격생 비교 데이터가 없습니다.` : null
+    };
   });
+
+  monthly.sort((a, b) => b.examYear - a.examYear || b.examMonth - a.examMonth);
+
+  res.json({ monthly });
 });
 
 // 자가채점용 문항 목록 (정답 제외, 문항번호/배점/파트만)
