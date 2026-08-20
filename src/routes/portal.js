@@ -141,11 +141,11 @@ router.get('/admission-comparison', async (req, res) => {
     depts.push({ univName: bucket.univName, deptName: bucket.deptName, distribution });
   }
 
-  // 표본이 많은(참고 가치가 높은) 순으로 정렬
+  // 합격생 평균(백분위)이 높은 순으로 정렬
   depts.sort((a, b) => {
-    const aN = Math.max(...a.distribution.map(d => d.n));
-    const bN = Math.max(...b.distribution.map(d => d.n));
-    return bN - aN;
+    const aAvg = Math.max(...a.distribution.map(d => d.avgPercentile));
+    const bAvg = Math.max(...b.distribution.map(d => d.avgPercentile));
+    return bAvg - aAvg;
   });
 
   res.json({
