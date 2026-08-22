@@ -294,4 +294,91 @@ router.get('/distribution', async (req, res) => {
   });
 });
 
+// ---------- 동일 기출문제 재시험 (올해 학생이 작년 특정월 문제를 다시 풀고, 그 결과를 외부업체가 채점한 파일) ----------
+// 기존 external_mock_rounds/scores와는 완전히 별도 테이블. 파일 형식은 외부모의고사와 동일하므로 같은 파서를 재사용한다.
+
+router.post('/retest-rounds', async (req, res) => {
+  const sourceExamYear = Number(req.body.source_exam_year);
+  const sourceExamMonth = Number(req.body.source_exam_month);
+  const retestYear = Number(req.body.retest_year);
+  const retestMonth = req.body.retest_month !== undefined && req.body.retest_month !== ''
+    ? Number(req.body.retest_month) : null;
+  const label = req.body.label || null;
+  if (!Number.isFinite(sourceExamYear) || !sourceExamYear || !Number.isFinite(sourceExamMonth) || !sourceExamMonth) {
+    return res.status(400).json({ error: 'source_exam_year, source_exam_month(재사용한 기출문제의 원래 연도/월)이 필요합니다.' });
+  }
+  if (!Number.isFinite(retestYear) || !retestYear) {
+    return res.status(400).json({ error: 'retest_year(실제로 재시험을 치른 연도)가 필요합니다.' });
+  }
+  const { rows } = await db.query(
+    `INSERT INTO retest_rounds (source_exam_year, source_exam_month, retest_year, retest_month, label)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [sourceExamYear, sourceExamMonth, retestYear, Number.isFinite(retestMonth) ? retestMonth : null, label]
+  );
+  res.status(201).json(rows[0]);
+});
+
+router.get('/retest-rounds', async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT r.*, COUNT(s.id)::int AS score_count
+     FROM retest_rounds r
+     LEFT JOIN retest_scores s ON s.retest_round_id = r.id
+     GROUP BY r.id ORDER BY r.retest_year DESC, r.retest_month DESC NULLS LAST, r.id DESC`
+  );
+  res.json(rows);
+});
+
+router.post('/retest-rounds/:id/upload', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
+  const retestRoundId = req.params.id;
+
+  let scores, warnings;
+  try {
+    const wb = readWorkbookRobust(req.file.buffer);
+    const result = parseExternalMockWorkbook(wb);
+    scores = result.scores;
+    warnings = result.warnings;
+  } catch (err) {
+    return res.status(422).json({ error: '재시험 결과 파싱 실패: ' + err.message });
+  }
+
+  const client = await db.pool.connect();
+  let inserted = 0;
+  try {
+    await client.query('BEGIN');
+    for (const s of scores) {
+      await client.query(
+        `INSERT INTO retest_scores
+           (retest_round_id, student_external_id, exam_no, real_name, subject, admission_type, track, campus_name, class_name,
+            raw_score, percentile, overall_rank, class_rank, class_applicants, track_rank, track_applicants,
+            class_avg, track_avg, top30_class_avg, top30_track_avg)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+         ON CONFLICT (retest_round_id, student_external_id, subject) DO UPDATE SET
+           exam_no=COALESCE($3, retest_scores.exam_no), real_name=$4, admission_type=$6, track=$7, campus_name=$8, class_name=$9,
+           raw_score=$10, percentile=$11, overall_rank=$12, class_rank=$13, class_applicants=$14,
+           track_rank=$15, track_applicants=$16, class_avg=$17, track_avg=$18, top30_class_avg=$19, top30_track_avg=$20`,
+        [retestRoundId, s.studentExternalId, s.examNo, s.realName, s.subject, s.admissionType, s.track, s.campusName, s.className,
+          s.rawScore, s.percentile, s.overallRank, s.classRank, s.classApplicants, s.trackRank, s.trackApplicants,
+          s.classAvg, s.trackAvg, s.top30ClassAvg, s.top30TrackAvg]
+      );
+      if (s.examNo && s.studentExternalId) {
+        await client.query(
+          `INSERT INTO student_external_id_map (exam_no, student_external_id, real_name, updated_at)
+           VALUES ($1,$2,$3, now())
+           ON CONFLICT (exam_no) DO UPDATE SET student_external_id=$2, real_name=$3, updated_at=now()`,
+          [s.examNo, s.studentExternalId, s.realName]
+        );
+      }
+      inserted++;
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ retestRoundId, scoreCount: inserted, warnings: warnings && warnings.length ? warnings : undefined });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'DB 저장 실패: ' + err.message });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;

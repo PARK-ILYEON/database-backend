@@ -176,6 +176,150 @@ router.get('/admission-comparison', async (req, res) => {
   res.json({ monthly });
 });
 
+// ---------- 동일 기출문제 재시험 비교 (기존 합격생 비교와 별개 기능, 원점수 기준) ----------
+// 올해 학생이 작년 특정월 문제(기출)를 그대로 다시 풀면, 그 기출문제가 원래 시행됐던 회차(external_mock_scores)에
+// 있는 합격생들의 성적과 "같은 문제 기준"으로 비교한다. 같은 문제이므로 백분위보다 원점수 비교가 더 정확하다.
+
+async function fetchRetestRows(examNo) {
+  const { rows: directRows } = await db.query(
+    `SELECT s.subject, s.raw_score, s.percentile, rr.source_exam_year, rr.source_exam_month,
+            rr.retest_year, rr.retest_month, rr.label
+     FROM retest_scores s
+     JOIN retest_rounds rr ON rr.id = s.retest_round_id
+     WHERE s.exam_no = $1
+     ORDER BY rr.retest_year DESC, rr.retest_month DESC NULLS LAST, s.subject`,
+    [examNo]
+  );
+  if (directRows.length > 0) return directRows;
+
+  const { rows: mapRows } = await db.query('SELECT student_external_id FROM student_external_id_map WHERE exam_no=$1', [examNo]);
+  if (mapRows.length === 0) return [];
+
+  const { rows } = await db.query(
+    `SELECT s.subject, s.raw_score, s.percentile, rr.source_exam_year, rr.source_exam_month,
+            rr.retest_year, rr.retest_month, rr.label
+     FROM retest_scores s
+     JOIN retest_rounds rr ON rr.id = s.retest_round_id
+     WHERE s.student_external_id = $1
+     ORDER BY rr.retest_year DESC, rr.retest_month DESC NULLS LAST, s.subject`,
+    [mapRows[0].student_external_id]
+  );
+  return rows;
+}
+
+// 합격생들의 "그 기출문제 원래 회차" 원점수 분포(대학/학과 단위)를 계산한다. 개인 식별정보는 반환하지 않는다.
+function buildRetestDepts(cases, historicalScoreRows, sourceYear, sourceMonth, myScoresBySubject) {
+  const byIdentitySubject = new Map(); // idKey|subject -> rawScore
+  for (const r of historicalScoreRows) {
+    if (r.exam_year !== sourceYear || r.exam_month !== sourceMonth) continue;
+    if (r.raw_score === null || r.raw_score === undefined) continue;
+    const idKey = r.exam_no || r.student_external_id;
+    byIdentitySubject.set(idKey + '|' + r.subject, Number(r.raw_score));
+  }
+
+  const mySubjects = [...myScoresBySubject.keys()];
+  const byDept = new Map();
+  for (const c of cases) {
+    const idKey = c.exam_no || c.student_external_id;
+    if (!idKey) continue;
+    const deptKey = c.univ_name + '|||' + c.dept_name;
+    for (const subject of mySubjects) {
+      const val = byIdentitySubject.get(idKey + '|' + subject);
+      if (val === undefined) continue;
+      if (!byDept.has(deptKey)) byDept.set(deptKey, { univName: c.univ_name, deptName: c.dept_name, subjectValues: {} });
+      const bucket = byDept.get(deptKey);
+      if (!bucket.subjectValues[subject]) bucket.subjectValues[subject] = [];
+      bucket.subjectValues[subject].push(val);
+    }
+  }
+
+  const depts = [];
+  for (const bucket of byDept.values()) {
+    const distribution = Object.entries(bucket.subjectValues).map(([subject, values]) => {
+      values.sort((a, b) => a - b);
+      const n = values.length;
+      const sum = values.reduce((a, b) => a + b, 0);
+      const mine = myScoresBySubject.get(subject);
+      return {
+        subject, n,
+        minRawScore: values[0], avgRawScore: Math.round((sum / n) * 10) / 10, maxRawScore: values[n - 1],
+        myRawScore: mine ? mine.rawScore : null
+      };
+    });
+    depts.push({ univName: bucket.univName, deptName: bucket.deptName, distribution });
+  }
+  depts.sort((a, b) => {
+    const aAvg = Math.max(...a.distribution.map(d => d.avgRawScore));
+    const bAvg = Math.max(...b.distribution.map(d => d.avgRawScore));
+    return bAvg - aAvg;
+  });
+  return depts;
+}
+
+router.get('/retest-comparison', async (req, res) => {
+  const { exam_no } = req.query;
+  if (!exam_no) return res.status(400).json({ error: 'exam_no가 필요합니다.' });
+
+  const myRows = await fetchRetestRows(exam_no);
+  if (myRows.length === 0) {
+    return res.json({ retests: [] });
+  }
+
+  // 재시험 회차별(같은 기출연월 기준)로 묶는다.
+  const roundKeys = [];
+  const myByRound = new Map(); // key: sourceYear|sourceMonth|retestYear|retestMonth -> {..., scoresBySubject}
+  for (const r of myRows) {
+    const key = r.source_exam_year + '|' + r.source_exam_month + '|' + r.retest_year + '|' + r.retest_month + '|' + (r.label || '');
+    if (!myByRound.has(key)) {
+      myByRound.set(key, {
+        sourceYear: r.source_exam_year, sourceMonth: r.source_exam_month,
+        retestYear: r.retest_year, retestMonth: r.retest_month, label: r.label,
+        scoresBySubject: new Map()
+      });
+      roundKeys.push(key);
+    }
+    myByRound.get(key).scoresBySubject.set(r.subject, { rawScore: r.raw_score, percentile: r.percentile });
+  }
+
+  const { rows: cases } = await db.query(
+    `SELECT univ_name, dept_name, student_external_id, exam_no
+     FROM admission_cases WHERE student_external_id IS NOT NULL OR exam_no IS NOT NULL`
+  );
+  const examNos = [...new Set(cases.map(c => c.exam_no).filter(Boolean))];
+  const externalIds = [...new Set(cases.map(c => c.student_external_id).filter(Boolean))];
+
+  let scoreRows = [];
+  if (examNos.length > 0 || externalIds.length > 0) {
+    const { rows } = await db.query(
+      `SELECT s.student_external_id, s.exam_no, s.subject, s.raw_score, r.exam_year, r.exam_month
+       FROM external_mock_scores s
+       JOIN external_mock_rounds r ON r.id = s.round_id
+       WHERE s.exam_no = ANY($1::text[]) OR s.student_external_id = ANY($2::text[])`,
+      [examNos, externalIds]
+    );
+    scoreRows = rows;
+  }
+
+  const retests = roundKeys.map(key => {
+    const m = myByRound.get(key);
+    const depts = buildRetestDepts(cases, scoreRows, m.sourceYear, m.sourceMonth, m.scoresBySubject);
+    return {
+      sourceYear: m.sourceYear,
+      sourceMonth: m.sourceMonth,
+      retestYear: m.retestYear,
+      retestMonth: m.retestMonth,
+      label: m.label,
+      myScores: [...m.scoresBySubject.entries()].map(([subject, v]) => ({ subject, ...v })),
+      depts,
+      note: depts.length === 0 ? `${m.sourceYear}년 ${m.sourceMonth}월 기출 원래 회차의 합격생 비교 데이터가 없습니다.` : null
+    };
+  });
+
+  retests.sort((a, b) => (b.retestYear - a.retestYear) || ((b.retestMonth || 0) - (a.retestMonth || 0)));
+
+  res.json({ retests });
+});
+
 // 자가채점용 문항 목록 (정답 제외, 문항번호/배점/파트만)
 router.get('/rounds/:id/questions', async (req, res) => {
   const { rows } = await db.query(

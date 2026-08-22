@@ -9,6 +9,7 @@
     "migrate:002": "psql \"$DATABASE_URL\" -f migrations/002_soft_delete_round.sql",
     "migrate:003": "psql \"$DATABASE_URL\" -f migrations/003_admission_prediction.sql",
     "migrate:004": "psql \"$DATABASE_URL\" -f migrations/004_admission_exam_no.sql",
+    "migrate:005": "psql \"$DATABASE_URL\" -f migrations/005_retest_rounds.sql",
     "verify:parsers": "node scripts/verify-parsers.js",
     "create-admin": "node scripts/create-admin.js"
   },
