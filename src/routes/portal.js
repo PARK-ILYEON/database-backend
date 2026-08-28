@@ -49,8 +49,16 @@ async function attachUnivInfo(groups) {
      ORDER BY univ_name, dept_name, year DESC`,
     [deptNames]
   );
+  // 정규화하면 같은 대학으로 묶이는 행이 여러 개일 수 있다(예: "서울시립대학교"로 개별 등록된 옛날 행 +
+  // "서울시립대"로 새로 올라온 경쟁률 행). 이 경우 지원인원(applicants_general) 값이 있는 쪽을 우선한다.
   const infoMap = new Map();
-  for (const r of rows) infoMap.set(normalizeUnivName(r.univ_name) + '|||' + r.dept_name, r);
+  for (const r of rows) {
+    const key = normalizeUnivName(r.univ_name) + '|||' + r.dept_name;
+    const prev = infoMap.get(key);
+    if (!prev || (r.applicants_general !== null && prev.applicants_general === null)) {
+      infoMap.set(key, r);
+    }
+  }
 
   for (const dept of allDepts) {
     const info = infoMap.get(normalizeUnivName(dept.univName) + '|||' + dept.deptName);
