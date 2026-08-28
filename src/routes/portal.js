@@ -18,6 +18,19 @@ router.get('/published-rounds', async (req, res) => {
   res.json(rows);
 });
 
+// "서울시립대"/"서울시립대학교", "숙명여대"/"숙명여자대학교"처럼 파일마다 대학명 표기가 다른 경우가 있어서,
+// 매칭할 때는 흔한 접미사(대학교/여자대학교/여대/대학/대)와 괄호(캠퍼스 표기 등)를 뗀 값으로 비교한다.
+function normalizeUnivName(name) {
+  let s = String(name ?? '').replace(/\s+/g, '');
+  s = s.replace(/\([^)]*\)/g, ''); // "고려대(서울)" -> "고려대"
+  s = s.replace(/외대$/, '외국어대학교'); // "한국외대" -> "한국외국어대학교" (단순 접미사 제거로는 안 잡히는 축약)
+  const suffixes = ['여자대학교', '대학교', '여대', '대학', '대'];
+  for (const suf of suffixes) {
+    if (s.length > suf.length && s.endsWith(suf)) { s = s.slice(0, -suf.length); break; }
+  }
+  return s;
+}
+
 // 대학DB(university_master)에서 그 학과의 최근 모집인원/지원인원 정보를 붙여준다 (참고용 컨텍스트).
 // group.depts 형태(배열 안에 { depts: [...] } 객체들)를 받아 그 안의 각 dept 객체에 univInfo를 채워 넣는다.
 async function attachUnivInfo(groups) {
@@ -27,20 +40,20 @@ async function attachUnivInfo(groups) {
   }
   if (allDepts.length === 0) return;
 
-  const pairs = [...new Set(allDepts.map(d => d.univName + '|||' + d.deptName))];
+  const deptNames = [...new Set(allDepts.map(d => d.deptName))];
   const { rows } = await db.query(
     `SELECT DISTINCT ON (univ_name, dept_name) univ_name, dept_name, year, quota_general, applicants_general,
             track, college, combined_flag
      FROM university_master
-     WHERE (univ_name || '|||' || dept_name) = ANY($1::text[])
+     WHERE dept_name = ANY($1::text[])
      ORDER BY univ_name, dept_name, year DESC`,
-    [pairs]
+    [deptNames]
   );
   const infoMap = new Map();
-  for (const r of rows) infoMap.set(r.univ_name + '|||' + r.dept_name, r);
+  for (const r of rows) infoMap.set(normalizeUnivName(r.univ_name) + '|||' + r.dept_name, r);
 
   for (const dept of allDepts) {
-    const info = infoMap.get(dept.univName + '|||' + dept.deptName);
+    const info = infoMap.get(normalizeUnivName(dept.univName) + '|||' + dept.deptName);
     if (!info) continue;
     const quota = info.quota_general !== null ? Number(info.quota_general) : null;
     const applicants = info.applicants_general !== null ? Number(info.applicants_general) : null;
