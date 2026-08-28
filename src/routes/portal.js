@@ -31,6 +31,17 @@ function normalizeUnivName(name) {
   return s;
 }
 
+// 학과명도 파일마다 "학과/학부/전공" 표기가 섞여 있어서 흔한 접미사만 보수적으로 뗀다.
+// (대학명과 달리 학과 종류가 매우 다양하므로, 잘못된 매칭을 피하기 위해 이 접미사들만 제거하고 나머지는 그대로 둔다.)
+function normalizeDeptName(name) {
+  let s = String(name ?? '').replace(/\s+/g, '');
+  const suffixes = ['학전공', '학과', '학부', '전공'];
+  for (const suf of suffixes) {
+    if (s.length > suf.length && s.endsWith(suf)) { s = s.slice(0, -suf.length); break; }
+  }
+  return s;
+}
+
 // 대학DB(university_master)에서 그 학과의 최근 모집인원/지원인원 정보를 붙여준다 (참고용 컨텍스트).
 // group.depts 형태(배열 안에 { depts: [...] } 객체들)를 받아 그 안의 각 dept 객체에 univInfo를 채워 넣는다.
 async function attachUnivInfo(groups) {
@@ -40,20 +51,18 @@ async function attachUnivInfo(groups) {
   }
   if (allDepts.length === 0) return;
 
-  const deptNames = [...new Set(allDepts.map(d => d.deptName))];
   const { rows } = await db.query(
     `SELECT DISTINCT ON (univ_name, dept_name) univ_name, dept_name, year, quota_general, applicants_general,
             track, college, combined_flag
      FROM university_master
-     WHERE dept_name = ANY($1::text[])
-     ORDER BY univ_name, dept_name, year DESC`,
-    [deptNames]
+     ORDER BY univ_name, dept_name, year DESC`
   );
-  // 정규화하면 같은 대학으로 묶이는 행이 여러 개일 수 있다(예: "서울시립대학교"로 개별 등록된 옛날 행 +
-  // "서울시립대"로 새로 올라온 경쟁률 행). 이 경우 지원인원(applicants_general) 값이 있는 쪽을 우선한다.
+  // 정규화하면 같은 대학+학과로 묶이는 행이 여러 개일 수 있다(예: "서울시립대학교"로 개별 등록된 옛날 행 +
+  // "서울시립대"로 새로 올라온 경쟁률 행, 또는 "행정학과"/"행정학부"). 이 경우 지원인원(applicants_general)
+  // 값이 있는 쪽을 우선한다.
   const infoMap = new Map();
   for (const r of rows) {
-    const key = normalizeUnivName(r.univ_name) + '|||' + r.dept_name;
+    const key = normalizeUnivName(r.univ_name) + '|||' + normalizeDeptName(r.dept_name);
     const prev = infoMap.get(key);
     if (!prev || (r.applicants_general !== null && prev.applicants_general === null)) {
       infoMap.set(key, r);
@@ -61,7 +70,7 @@ async function attachUnivInfo(groups) {
   }
 
   for (const dept of allDepts) {
-    const info = infoMap.get(normalizeUnivName(dept.univName) + '|||' + dept.deptName);
+    const info = infoMap.get(normalizeUnivName(dept.univName) + '|||' + normalizeDeptName(dept.deptName));
     if (!info) continue;
     const quota = info.quota_general !== null ? Number(info.quota_general) : null;
     const applicants = info.applicants_general !== null ? Number(info.applicants_general) : null;
