@@ -327,6 +327,12 @@ function apiUnivMasterUpdate(id, payload){
 function apiUnivMasterDelete(id){
   return apiFetch('/api/university-master/'+id, { method:'DELETE' });
 }
+function apiUnivCompetitionRatioUpload(file, year){
+  var fd = new FormData();
+  fd.append('file', file);
+  fd.append('year', year);
+  return apiFetch('/api/university-master/competition-ratio-upload', { method:'POST', body: fd });
+}
 // ---- 합격 예측(참고) 기능 ----
 function apiExamRoundResultsUpload(examRoundId, file){
   var fd = new FormData();
@@ -977,6 +983,14 @@ function renderLiveUnivTab(){
   html += '<button class="btn" data-act="liveUploadUniv" '+(state.liveLoading?'disabled':'')+'>업로드</button>';
   html += '</div></div>';
 
+  html += '<div class="card"><h3>대학 경쟁률(모집/지원인원) 업로드</h3>';
+  html += '<div class="note">대학별로 시트가 나뉘어 있고 "모집단위/모집인원/지원인원" 컬럼이 있는 파일을 올리면 자동으로 반영됩니다. 첫 번째 시트(전체 요약)는 자동으로 건너뜁니다. 기존 학사 모집인원 등 다른 값은 그대로 유지됩니다.</div>';
+  html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">';
+  html += liveInput('liveUnivCompYearInput', '입시 연도', state.liveUnivUploadYear);
+  html += '<input type="file" id="liveUnivCompFile" accept=".xlsx" style="display:block"/>';
+  html += '<button class="btn" data-act="liveUploadUnivCompetitionRatio" '+(state.liveLoading?'disabled':'')+'>업로드</button>';
+  html += '</div></div>';
+
   html += '<div class="card"><h3>대학 마스터 DB 조회</h3>';
   html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
   html += liveInput('liveUnivYearInput', '연도 필터', state.liveUnivYear);
@@ -989,8 +1003,10 @@ function renderLiveUnivTab(){
     if (state.liveUnivList.length===0){
       html += '<div class="empty">조건에 맞는 대학 마스터 데이터가 없습니다.</div></div>';
     } else {
-      html += '<div class="table-wrap"><table><thead><tr><th>대학</th><th>모집단위</th><th>연도</th><th>일반</th><th>학사</th><th></th></tr></thead><tbody>';
+      html += '<div class="table-wrap"><table><thead><tr><th>대학</th><th>모집단위</th><th>연도</th><th>일반</th><th>학사</th><th>계열</th><th>지원(일반)</th><th>경쟁률</th><th></th></tr></thead><tbody>';
       state.liveUnivList.slice(0,200).forEach(function(u){
+        var ratio = (u.quota_general && u.applicants_general) ? (Math.round((u.applicants_general/u.quota_general)*100)/100)+':1' : '-';
+        var quotaLabel = (u.quota_general!==null?u.quota_general:'-') + (u.combined_flag ? ' (통합)' : '');
         if (state.liveUnivEditId === u.id){
           html += '<tr>'
             + '<td>'+liveInput('liveUnivEditUniv', '대학명', u.univ_name)+'</td>'
@@ -998,12 +1014,14 @@ function renderLiveUnivTab(){
             + '<td>'+liveInput('liveUnivEditYear', '연도', u.year)+'</td>'
             + '<td>'+liveInput('liveUnivEditGeneral', '일반', u.quota_general!==null?u.quota_general:'')+'</td>'
             + '<td>'+liveInput('liveUnivEditAcademic', '학사', u.quota_academic!==null?u.quota_academic:'')+'</td>'
+            + '<td>'+esc(u.track||'-')+'</td><td>'+(u.applicants_general!==null?u.applicants_general:'-')+'</td><td>'+ratio+'</td>'
             + '<td style="white-space:nowrap">'
             + '<button class="btn secondary" data-act="liveUnivEditSave" data-id="'+u.id+'" style="font-size:11px;padding:4px 8px">저장</button> '
             + '<button class="btn secondary" data-act="liveUnivEditCancel" style="font-size:11px;padding:4px 8px">취소</button>'
             + '</td></tr>';
         } else {
-          html += '<tr><td>'+esc(u.univ_name)+'</td><td>'+esc(u.dept_name)+'</td><td>'+esc(u.year)+'</td><td>'+(u.quota_general!==null?u.quota_general:'-')+'</td><td>'+(u.quota_academic!==null?u.quota_academic:'-')+'</td>'
+          html += '<tr><td>'+esc(u.univ_name)+'</td><td>'+esc(u.dept_name)+'</td><td>'+esc(u.year)+'</td><td>'+quotaLabel+'</td><td>'+(u.quota_academic!==null?u.quota_academic:'-')+'</td>'
+            + '<td>'+esc(u.track||'-')+'</td><td>'+(u.applicants_general!==null?u.applicants_general:'-')+'</td><td>'+ratio+'</td>'
             + '<td style="white-space:nowrap">'
             + '<button class="btn secondary" data-act="liveUnivEditStart" data-id="'+u.id+'" style="font-size:11px;padding:4px 8px">수정</button> '
             + '<button class="btn secondary" data-act="liveUnivDelete" data-id="'+u.id+'" style="font-size:11px;padding:4px 8px;color:var(--bad);border-color:var(--bad)">삭제</button>'
@@ -1198,6 +1216,16 @@ function renderPvExternalMockTab(){
   return html;
 }
 
+// 대학DB(university_master)에서 붙여준 모집/지원인원 정보를 짧은 문자열로 표시한다 (참고용).
+function fmtUnivInfo(info){
+  if (!info || (info.quotaGeneral===null && info.applicantsGeneral===null)) return '-';
+  var parts = [];
+  if (info.quotaGeneral!==null) parts.push('모집 '+info.quotaGeneral+(info.isCombinedSelection?'(통합)':''));
+  if (info.applicantsGeneral!==null) parts.push('지원 '+info.applicantsGeneral);
+  if (info.competitionRatio!==null) parts.push(info.competitionRatio+':1');
+  return parts.join(' / ') || '-';
+}
+
 // 합격생 DB 대비 위치 비교 — 합격자명단에 있는 대학/학과별로, 그 학과 합격생들의 외부 모의고사
 // 성적 분포(과목별 표본수/최저/평균/최고 백분위)와 내 성적을 나란히 보여준다. 확률이 아니라 참고용.
 function renderPvAdmissionCompareTab(){
@@ -1223,7 +1251,7 @@ function renderPvAdmissionCompareTab(){
       html += '<div class="empty">'+esc(month.note || '비교할 수 있는 합격생 데이터가 없습니다.')+'</div></div>';
       return;
     }
-    html += '<div class="table-wrap"><table><thead><tr><th>대학</th><th>학과</th><th>과목</th><th>표본수</th><th>합격생 최저~최고 백분위</th><th>합격생 평균</th><th>내 백분위</th><th>판단</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>대학</th><th>학과</th><th>과목</th><th>표본수</th><th>합격생 최저~최고 백분위</th><th>합격생 평균</th><th>내 백분위</th><th>판단</th><th>경쟁률(참고)</th></tr></thead><tbody>';
     month.depts.forEach(function(dept){
       dept.distribution.forEach(function(row){
         var judge = '-';
@@ -1237,7 +1265,8 @@ function renderPvAdmissionCompareTab(){
           + '<td>'+row.minPercentile+'% ~ '+row.maxPercentile+'%</td>'
           + '<td>'+row.avgPercentile+'%</td>'
           + '<td>'+(row.myPercentile!==null&&row.myPercentile!==undefined?row.myPercentile+'%':'-')+'</td>'
-          + '<td><span class="'+judgeClass+'">'+judge+'</span></td></tr>';
+          + '<td><span class="'+judgeClass+'">'+judge+'</span></td>'
+          + '<td>'+fmtUnivInfo(dept.univInfo)+'</td></tr>';
       });
     });
     html += '</tbody></table></div></div>';
@@ -1264,7 +1293,7 @@ function renderPvRetestCompareSection(){
       html += '<div class="empty">'+esc(rt.note || '비교할 수 있는 합격생 데이터가 없습니다.')+'</div></div>';
       return;
     }
-    html += '<div class="table-wrap"><table><thead><tr><th>대학</th><th>학과</th><th>과목</th><th>표본수</th><th>합격생 최저~최고 원점수</th><th>합격생 평균 원점수</th><th>내 원점수</th><th>판단</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>대학</th><th>학과</th><th>과목</th><th>표본수</th><th>합격생 최저~최고 원점수</th><th>합격생 평균 원점수</th><th>내 원점수</th><th>판단</th><th>경쟁률(참고)</th></tr></thead><tbody>';
     rt.depts.forEach(function(dept){
       dept.distribution.forEach(function(row){
         var judge = '-';
@@ -1278,7 +1307,8 @@ function renderPvRetestCompareSection(){
           + '<td>'+row.minRawScore+' ~ '+row.maxRawScore+'</td>'
           + '<td>'+row.avgRawScore+'</td>'
           + '<td>'+(row.myRawScore!==null&&row.myRawScore!==undefined?row.myRawScore:'-')+'</td>'
-          + '<td><span class="'+judgeClass+'">'+judge+'</span></td></tr>';
+          + '<td><span class="'+judgeClass+'">'+judge+'</span></td>'
+          + '<td>'+fmtUnivInfo(dept.univInfo)+'</td></tr>';
       });
     });
     html += '</tbody></table></div></div>';
@@ -1815,6 +1845,23 @@ document.addEventListener('click', function(e){
     setState({liveLoading:true, liveMessage:'업로드 중...', liveMessageType:'info'});
     apiUploadUnivBulk(ufile, uyear, usheet).then(function(result){
       setState({liveLoading:false, liveMessage:'대학DB 업로드 완료: '+result.inserted+'건 등록/갱신', liveMessageType:'ok'});
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:'업로드 실패: '+err.message, liveMessageType:'error'});
+    });
+  }
+  else if (act==='liveUploadUnivCompetitionRatio'){
+    var ucFile = $('#liveUnivCompFile').files && $('#liveUnivCompFile').files[0];
+    var ucYear = $('#liveUnivCompYearInput').value.trim();
+    if (!ucFile || !ucYear){ setState({liveMessage:'파일과 연도를 모두 입력해주세요.', liveMessageType:'error'}); return; }
+    setState({liveLoading:true, liveMessage:'업로드 중...', liveMessageType:'info'});
+    apiUnivCompetitionRatioUpload(ucFile, ucYear).then(function(result){
+      var msg = '경쟁률 업로드 완료: '+result.inserted+'건 등록/갱신';
+      var msgType = 'ok';
+      if (result.warnings && result.warnings.length){
+        msg += ' (일부 시트 인식 실패: ' + result.warnings.join(' / ') + ')';
+        msgType = 'error';
+      }
+      setState({liveLoading:false, liveMessage:msg, liveMessageType:msgType});
     }).catch(function(err){
       setState({liveLoading:false, liveMessage:'업로드 실패: '+err.message, liveMessageType:'error'});
     });

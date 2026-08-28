@@ -10,6 +10,7 @@
     "migrate:003": "psql \"$DATABASE_URL\" -f migrations/003_admission_prediction.sql",
     "migrate:004": "psql \"$DATABASE_URL\" -f migrations/004_admission_exam_no.sql",
     "migrate:005": "psql \"$DATABASE_URL\" -f migrations/005_retest_rounds.sql",
+    "migrate:006": "psql \"$DATABASE_URL\" -f migrations/006_university_competition_ratio.sql",
     "verify:parsers": "node scripts/verify-parsers.js",
     "create-admin": "node scripts/create-admin.js"
   },

@@ -18,6 +18,44 @@ router.get('/published-rounds', async (req, res) => {
   res.json(rows);
 });
 
+// 대학DB(university_master)에서 그 학과의 최근 모집인원/지원인원 정보를 붙여준다 (참고용 컨텍스트).
+// group.depts 형태(배열 안에 { depts: [...] } 객체들)를 받아 그 안의 각 dept 객체에 univInfo를 채워 넣는다.
+async function attachUnivInfo(groups) {
+  const allDepts = [];
+  for (const group of groups) {
+    if (group && Array.isArray(group.depts)) allDepts.push(...group.depts);
+  }
+  if (allDepts.length === 0) return;
+
+  const pairs = [...new Set(allDepts.map(d => d.univName + '|||' + d.deptName))];
+  const { rows } = await db.query(
+    `SELECT DISTINCT ON (univ_name, dept_name) univ_name, dept_name, year, quota_general, applicants_general,
+            track, college, combined_flag
+     FROM university_master
+     WHERE (univ_name || '|||' || dept_name) = ANY($1::text[])
+     ORDER BY univ_name, dept_name, year DESC`,
+    [pairs]
+  );
+  const infoMap = new Map();
+  for (const r of rows) infoMap.set(r.univ_name + '|||' + r.dept_name, r);
+
+  for (const dept of allDepts) {
+    const info = infoMap.get(dept.univName + '|||' + dept.deptName);
+    if (!info) continue;
+    const quota = info.quota_general !== null ? Number(info.quota_general) : null;
+    const applicants = info.applicants_general !== null ? Number(info.applicants_general) : null;
+    dept.univInfo = {
+      year: info.year,
+      quotaGeneral: quota,
+      applicantsGeneral: applicants,
+      competitionRatio: (quota && applicants) ? Math.round((applicants / quota) * 100) / 100 : null,
+      track: info.track,
+      college: info.college,
+      isCombinedSelection: info.combined_flag
+    };
+  }
+}
+
 // 이 수험번호의 외부 모의고사(편입모의고사 등) 성적 전체 행을 가져온다.
 // 성적 파일에 수험번호가 직접 있으면 그걸로 바로 찾고, 없으면 명단 업로드로 쌓인 아이디 매핑을 거친다.
 async function fetchExternalMockRows(examNo) {
@@ -172,6 +210,7 @@ router.get('/admission-comparison', async (req, res) => {
   });
 
   monthly.sort((a, b) => b.examYear - a.examYear || b.examMonth - a.examMonth);
+  await attachUnivInfo(monthly);
 
   res.json({ monthly });
 });
@@ -316,6 +355,7 @@ router.get('/retest-comparison', async (req, res) => {
   });
 
   retests.sort((a, b) => (b.retestYear - a.retestYear) || ((b.retestMonth || 0) - (a.retestMonth || 0)));
+  await attachUnivInfo(retests);
 
   res.json({ retests });
 });

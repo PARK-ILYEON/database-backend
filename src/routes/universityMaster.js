@@ -3,6 +3,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const db = require('../db');
 const { readWorkbookRobust } = require('../parsers/normalizeXlsx');
+const { parseCompetitionRatioWorkbook } = require('../parsers/competitionRatioParser');
 const { requireAdmin } = require('../middleware/requireAdmin');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -146,6 +147,65 @@ router.post('/bulk-upload', requireAdmin, upload.single('file'), async (req, res
     }
     await client.query('COMMIT');
     res.status(201).json({ inserted, year, skippedDuplicateOrEmptyRows: duplicateRowCount });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'DB 저장 실패: ' + err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// 대학별 시트로 나뉜 모집인원/지원인원 자료 업로드 (예: "26학년도 경쟁률.xlsx").
+// 기존 bulk-upload("대학교/전공/일반/학사" 단일 시트 포맷)와는 완전히 별개의 파일 형식이라 새 경로로 둔다.
+// 같은 (univ_name, dept_name, year) 행이 이미 있으면 quota_general/applicants_general/track/college/
+// combined_flag만 갱신하고, quota_academic 등 기존 값은 건드리지 않는다.
+router.post('/competition-ratio-upload', requireAdmin, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
+  const year = Number(req.body.year);
+  if (!year) return res.status(400).json({ error: 'year(입시 연도)가 필요합니다.' });
+
+  let records, warnings;
+  try {
+    const wb = readWorkbookRobust(req.file.buffer);
+    const result = parseCompetitionRatioWorkbook(wb);
+    records = result.records;
+    warnings = result.warnings;
+  } catch (err) {
+    return res.status(422).json({ error: '경쟁률 자료 파싱 실패: ' + err.message });
+  }
+
+  // 같은 배치 안에서 (univ_name, dept_name) 키가 중복되면 Postgres가 에러를 내므로 먼저 정리한다(마지막 값 우선).
+  const recordMap = new Map();
+  for (const r of records) {
+    recordMap.set(`${r.univName}|||${r.deptName}`, r);
+  }
+  const uniqueRecords = [...recordMap.values()];
+
+  const BATCH_SIZE = 200;
+  const client = await db.pool.connect();
+  let inserted = 0;
+  try {
+    await client.query('BEGIN');
+    for (let i = 0; i < uniqueRecords.length; i += BATCH_SIZE) {
+      const batch = uniqueRecords.slice(i, i + BATCH_SIZE);
+      const values = [];
+      const placeholders = batch.map((r, idx) => {
+        const base = idx * 8;
+        values.push(r.univName, r.deptName, year, r.quotaGeneral, r.applicantsGeneral, r.track, r.college, r.isCombinedSelection);
+        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8})`;
+      }).join(',');
+      await client.query(
+        `INSERT INTO university_master (univ_name, dept_name, year, quota_general, applicants_general, track, college, combined_flag)
+         VALUES ${placeholders}
+         ON CONFLICT (univ_name, dept_name, year)
+         DO UPDATE SET quota_general=EXCLUDED.quota_general, applicants_general=EXCLUDED.applicants_general,
+           track=EXCLUDED.track, college=EXCLUDED.college, combined_flag=EXCLUDED.combined_flag`,
+        values
+      );
+      inserted += batch.length;
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ inserted, year, warnings: warnings && warnings.length ? warnings : undefined });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: 'DB 저장 실패: ' + err.message });
