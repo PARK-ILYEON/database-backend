@@ -333,6 +333,12 @@ function apiUnivCompetitionRatioUpload(file, year){
   fd.append('year', year);
   return apiFetch('/api/university-master/competition-ratio-upload', { method:'POST', body: fd });
 }
+function apiUnivAcademicCompetitionRatioUpload(file, year){
+  var fd = new FormData();
+  fd.append('file', file);
+  fd.append('year', year);
+  return apiFetch('/api/university-master/academic-competition-ratio-upload', { method:'POST', body: fd });
+}
 // ---- 합격 예측(참고) 기능 ----
 function apiExamRoundResultsUpload(examRoundId, file){
   var fd = new FormData();
@@ -991,6 +997,14 @@ function renderLiveUnivTab(){
   html += '<button class="btn" data-act="liveUploadUnivCompetitionRatio" '+(state.liveLoading?'disabled':'')+'>업로드</button>';
   html += '</div></div>';
 
+  html += '<div class="card"><h3>대학 학사 경쟁률 업로드</h3>';
+  html += '<div class="note">학사편입 경쟁률 파일(대학/계열/모집단위/모집인원/지원인원 컬럼, 시트 1개에 전체 대학)을 올리면 반영됩니다. 같은 학과라도 전형별로 줄이 여러 개면 합치지 않고 그대로 저장합니다. 일반 데이터(university_master)는 전혀 건드리지 않으며, 같은 연도를 다시 올리면 그 연도의 학사 자료만 통째로 교체됩니다.</div>';
+  html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">';
+  html += liveInput('liveUnivAcadCompYearInput', '입시 연도', state.liveUnivUploadYear);
+  html += '<input type="file" id="liveUnivAcadCompFile" accept=".xlsx" style="display:block"/>';
+  html += '<button class="btn" data-act="liveUploadUnivAcademicCompetitionRatio" '+(state.liveLoading?'disabled':'')+'>업로드</button>';
+  html += '</div></div>';
+
   html += '<div class="card"><h3>대학 마스터 DB 조회</h3>';
   html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
   html += liveInput('liveUnivYearInput', '연도 필터', state.liveUnivYear);
@@ -1218,12 +1232,26 @@ function renderPvExternalMockTab(){
 
 // 대학DB(university_master)에서 붙여준 모집/지원인원 정보를 짧은 문자열로 표시한다 (참고용).
 function fmtUnivInfo(info){
-  if (!info || (info.quotaGeneral===null && info.applicantsGeneral===null)) return '-';
+  if (!info) return '-';
   var parts = [];
-  if (info.quotaGeneral!==null) parts.push('모집 '+info.quotaGeneral+(info.isCombinedSelection?'(통합)':''));
-  if (info.applicantsGeneral!==null) parts.push('지원 '+info.applicantsGeneral);
-  if (info.competitionRatio!==null) parts.push(info.competitionRatio+':1');
-  return parts.join(' / ') || '-';
+  if (info.quotaGeneral!==null && info.quotaGeneral!==undefined) parts.push('일반 모집 '+info.quotaGeneral+(info.isCombinedSelection?'(통합)':''));
+  if (info.applicantsGeneral!==null && info.applicantsGeneral!==undefined) parts.push('지원 '+info.applicantsGeneral);
+  if (info.competitionRatio!==null && info.competitionRatio!==undefined) parts.push(info.competitionRatio+':1');
+  var general = parts.join(' / ');
+
+  var academicStr = '';
+  if (info.academic && info.academic.entries && info.academic.entries.length){
+    var a = info.academic;
+    var aparts = [];
+    if (a.totalQuota!==null) aparts.push('모집 '+a.totalQuota);
+    if (a.totalApplicants!==null) aparts.push('지원 '+a.totalApplicants);
+    if (a.totalCompetitionRatio!==null) aparts.push(a.totalCompetitionRatio+':1');
+    var label = a.entries.length>1 ? '학사('+a.entries.length+'개 전형 합산)' : '학사';
+    academicStr = label+' '+(aparts.join(' / ')||'-');
+  }
+
+  if (!general && !academicStr) return '-';
+  return [general, academicStr].filter(Boolean).join(' | ');
 }
 
 // 합격생 DB 대비 위치 비교 — 합격자명단에 있는 대학/학과별로, 그 학과 합격생들의 외부 모의고사
@@ -1856,6 +1884,23 @@ document.addEventListener('click', function(e){
     setState({liveLoading:true, liveMessage:'업로드 중...', liveMessageType:'info'});
     apiUnivCompetitionRatioUpload(ucFile, ucYear).then(function(result){
       var msg = '경쟁률 업로드 완료: '+result.inserted+'건 등록/갱신';
+      var msgType = 'ok';
+      if (result.warnings && result.warnings.length){
+        msg += ' (일부 시트 인식 실패: ' + result.warnings.join(' / ') + ')';
+        msgType = 'error';
+      }
+      setState({liveLoading:false, liveMessage:msg, liveMessageType:msgType});
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:'업로드 실패: '+err.message, liveMessageType:'error'});
+    });
+  }
+  else if (act==='liveUploadUnivAcademicCompetitionRatio'){
+    var uacFile = $('#liveUnivAcadCompFile').files && $('#liveUnivAcadCompFile').files[0];
+    var uacYear = $('#liveUnivAcadCompYearInput').value.trim();
+    if (!uacFile || !uacYear){ setState({liveMessage:'파일과 연도를 모두 입력해주세요.', liveMessageType:'error'}); return; }
+    setState({liveLoading:true, liveMessage:'업로드 중...', liveMessageType:'info'});
+    apiUnivAcademicCompetitionRatioUpload(uacFile, uacYear).then(function(result){
+      var msg = '학사 경쟁률 업로드 완료: '+result.inserted+'건 등록 (해당 연도 기존 학사 자료는 교체됨)';
       var msgType = 'ok';
       if (result.warnings && result.warnings.length){
         msg += ' (일부 시트 인식 실패: ' + result.warnings.join(' / ') + ')';

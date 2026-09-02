@@ -69,20 +69,61 @@ async function attachUnivInfo(groups) {
     }
   }
 
+  // 학사편입 경쟁률(university_academic_competition)은 같은 학과라도 전형별로 여러 줄일 수 있어
+  // 일반처럼 하나로 합치지 않고, 매칭되는 줄을 전부 모아 배열로 붙여준다.
+  const { rows: academicRows } = await db.query(
+    `SELECT univ_name, dept_name, year, track, college, quota_academic, applicants_academic, combined_flag
+     FROM university_academic_competition
+     ORDER BY univ_name, dept_name, id`
+  );
+  const academicMap = new Map();
+  for (const r of academicRows) {
+    const key = normalizeUnivName(r.univ_name) + '|||' + normalizeDeptName(r.dept_name);
+    if (!academicMap.has(key)) academicMap.set(key, []);
+    academicMap.get(key).push(r);
+  }
+
   for (const dept of allDepts) {
-    const info = infoMap.get(normalizeUnivName(dept.univName) + '|||' + normalizeDeptName(dept.deptName));
-    if (!info) continue;
-    const quota = info.quota_general !== null ? Number(info.quota_general) : null;
-    const applicants = info.applicants_general !== null ? Number(info.applicants_general) : null;
-    dept.univInfo = {
-      year: info.year,
-      quotaGeneral: quota,
-      applicantsGeneral: applicants,
-      competitionRatio: (quota && applicants) ? Math.round((applicants / quota) * 100) / 100 : null,
-      track: info.track,
-      college: info.college,
-      isCombinedSelection: info.combined_flag
-    };
+    const key = normalizeUnivName(dept.univName) + '|||' + normalizeDeptName(dept.deptName);
+    const info = infoMap.get(key);
+    if (info) {
+      const quota = info.quota_general !== null ? Number(info.quota_general) : null;
+      const applicants = info.applicants_general !== null ? Number(info.applicants_general) : null;
+      dept.univInfo = {
+        year: info.year,
+        quotaGeneral: quota,
+        applicantsGeneral: applicants,
+        competitionRatio: (quota && applicants) ? Math.round((applicants / quota) * 100) / 100 : null,
+        track: info.track,
+        college: info.college,
+        isCombinedSelection: info.combined_flag
+      };
+    }
+
+    const academicEntries = academicMap.get(key);
+    if (academicEntries && academicEntries.length > 0) {
+      if (!dept.univInfo) dept.univInfo = {};
+      let totalQuota = 0, totalApplicants = 0, hasQuota = false, hasApplicants = false;
+      const entries = academicEntries.map(r => {
+        const quota = r.quota_academic !== null ? Number(r.quota_academic) : null;
+        const applicants = r.applicants_academic !== null ? Number(r.applicants_academic) : null;
+        if (quota !== null) { totalQuota += quota; hasQuota = true; }
+        if (applicants !== null) { totalApplicants += applicants; hasApplicants = true; }
+        return {
+          quotaAcademic: quota,
+          applicantsAcademic: applicants,
+          competitionRatio: (quota && applicants) ? Math.round((applicants / quota) * 100) / 100 : null,
+          isCombinedSelection: r.combined_flag
+        };
+      });
+      dept.univInfo.academic = {
+        year: academicEntries[0].year,
+        entries,
+        totalQuota: hasQuota ? totalQuota : null,
+        totalApplicants: hasApplicants ? totalApplicants : null,
+        totalCompetitionRatio: (hasQuota && totalQuota && hasApplicants) ? Math.round((totalApplicants / totalQuota) * 100) / 100 : null
+      };
+    }
   }
 }
 
