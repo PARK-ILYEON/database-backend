@@ -1251,7 +1251,7 @@ function fmtUnivInfo(info){
   }
 
   if (!general && !academicStr) return '-';
-  return [general, academicStr].filter(Boolean).join(' | ');
+  return [general, academicStr].filter(Boolean).join('<br>');
 }
 
 // 합격생 DB 대비 위치 비교 — 합격자명단에 있는 대학/학과별로, 그 학과 합격생들의 외부 모의고사
