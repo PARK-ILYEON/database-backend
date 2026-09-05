@@ -83,6 +83,19 @@ async function attachUnivInfo(groups) {
     academicMap.get(key).push(r);
   }
 
+  // 특별전형(농어촌/재외국민 등) 경쟁률도 학사와 같은 방식(전형별로 줄 여러 개 가능)으로 붙인다.
+  const { rows: specialRows } = await db.query(
+    `SELECT univ_name, dept_name, year, admission_type, track, college, quota_special, applicants_special, combined_flag
+     FROM university_special_admission
+     ORDER BY univ_name, dept_name, id`
+  );
+  const specialMap = new Map();
+  for (const r of specialRows) {
+    const key = normalizeUnivName(r.univ_name) + '|||' + normalizeDeptName(r.dept_name);
+    if (!specialMap.has(key)) specialMap.set(key, []);
+    specialMap.get(key).push(r);
+  }
+
   for (const dept of allDepts) {
     const key = normalizeUnivName(dept.univName) + '|||' + normalizeDeptName(dept.deptName);
     const info = infoMap.get(key);
@@ -118,6 +131,32 @@ async function attachUnivInfo(groups) {
       });
       dept.univInfo.academic = {
         year: academicEntries[0].year,
+        entries,
+        totalQuota: hasQuota ? totalQuota : null,
+        totalApplicants: hasApplicants ? totalApplicants : null,
+        totalCompetitionRatio: (hasQuota && totalQuota && hasApplicants) ? Math.round((totalApplicants / totalQuota) * 100) / 100 : null
+      };
+    }
+
+    const specialEntries = specialMap.get(key);
+    if (specialEntries && specialEntries.length > 0) {
+      if (!dept.univInfo) dept.univInfo = {};
+      let totalQuota = 0, totalApplicants = 0, hasQuota = false, hasApplicants = false;
+      const entries = specialEntries.map(r => {
+        const quota = r.quota_special !== null ? Number(r.quota_special) : null;
+        const applicants = r.applicants_special !== null ? Number(r.applicants_special) : null;
+        if (quota !== null) { totalQuota += quota; hasQuota = true; }
+        if (applicants !== null) { totalApplicants += applicants; hasApplicants = true; }
+        return {
+          admissionType: r.admission_type,
+          quotaSpecial: quota,
+          applicantsSpecial: applicants,
+          competitionRatio: (quota && applicants) ? Math.round((applicants / quota) * 100) / 100 : null,
+          isCombinedSelection: r.combined_flag
+        };
+      });
+      dept.univInfo.special = {
+        year: specialEntries[0].year,
         entries,
         totalQuota: hasQuota ? totalQuota : null,
         totalApplicants: hasApplicants ? totalApplicants : null,

@@ -339,6 +339,12 @@ function apiUnivAcademicCompetitionRatioUpload(file, year){
   fd.append('year', year);
   return apiFetch('/api/university-master/academic-competition-ratio-upload', { method:'POST', body: fd });
 }
+function apiUnivSpecialAdmissionRatioUpload(file, year){
+  var fd = new FormData();
+  fd.append('file', file);
+  fd.append('year', year);
+  return apiFetch('/api/university-master/special-admission-ratio-upload', { method:'POST', body: fd });
+}
 // ---- 합격 예측(참고) 기능 ----
 function apiExamRoundResultsUpload(examRoundId, file){
   var fd = new FormData();
@@ -1005,6 +1011,14 @@ function renderLiveUnivTab(){
   html += '<button class="btn" data-act="liveUploadUnivAcademicCompetitionRatio" '+(state.liveLoading?'disabled':'')+'>업로드</button>';
   html += '</div></div>';
 
+  html += '<div class="card"><h3>대학 특별전형 경쟁률 업로드</h3>';
+  html += '<div class="note">특별전형(농어촌/재외국민/기회균형 등) 경쟁률 파일(대학/전형/계열/모집단위/모집인원/지원인원 컬럼)을 올리면 반영됩니다. 같은 학과라도 전형 종류별로 줄이 여러 개면 합치지 않고 그대로 저장합니다. 일반/학사 데이터는 전혀 건드리지 않으며, 같은 연도를 다시 올리면 그 연도의 특별전형 자료만 통째로 교체됩니다.</div>';
+  html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">';
+  html += liveInput('liveUnivSpecCompYearInput', '입시 연도', state.liveUnivUploadYear);
+  html += '<input type="file" id="liveUnivSpecCompFile" accept=".xlsx" style="display:block"/>';
+  html += '<button class="btn" data-act="liveUploadUnivSpecialAdmissionRatio" '+(state.liveLoading?'disabled':'')+'>업로드</button>';
+  html += '</div></div>';
+
   html += '<div class="card"><h3>대학 마스터 DB 조회</h3>';
   html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
   html += liveInput('liveUnivYearInput', '연도 필터', state.liveUnivYear);
@@ -1250,8 +1264,20 @@ function fmtUnivInfo(info){
     academicStr = label+' '+(aparts.join(' / ')||'-');
   }
 
-  if (!general && !academicStr) return '-';
-  return [general, academicStr].filter(Boolean).join('<br>');
+  var specialStr = '';
+  if (info.special && info.special.entries && info.special.entries.length){
+    var sTexts = info.special.entries.map(function(e){
+      var eparts = [];
+      if (e.quotaSpecial!==null) eparts.push('모집 '+e.quotaSpecial);
+      if (e.applicantsSpecial!==null) eparts.push('지원 '+e.applicantsSpecial);
+      if (e.competitionRatio!==null) eparts.push(e.competitionRatio+':1');
+      return (e.admissionType||'특별전형')+' '+(eparts.join('/')||'-');
+    });
+    specialStr = '특별전형: '+sTexts.join(', ');
+  }
+
+  if (!general && !academicStr && !specialStr) return '-';
+  return [general, academicStr, specialStr].filter(Boolean).join('<br>');
 }
 
 // 합격생 DB 대비 위치 비교 — 합격자명단에 있는 대학/학과별로, 그 학과 합격생들의 외부 모의고사
@@ -1901,6 +1927,23 @@ document.addEventListener('click', function(e){
     setState({liveLoading:true, liveMessage:'업로드 중...', liveMessageType:'info'});
     apiUnivAcademicCompetitionRatioUpload(uacFile, uacYear).then(function(result){
       var msg = '학사 경쟁률 업로드 완료: '+result.inserted+'건 등록 (해당 연도 기존 학사 자료는 교체됨)';
+      var msgType = 'ok';
+      if (result.warnings && result.warnings.length){
+        msg += ' (일부 시트 인식 실패: ' + result.warnings.join(' / ') + ')';
+        msgType = 'error';
+      }
+      setState({liveLoading:false, liveMessage:msg, liveMessageType:msgType});
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:'업로드 실패: '+err.message, liveMessageType:'error'});
+    });
+  }
+  else if (act==='liveUploadUnivSpecialAdmissionRatio'){
+    var uscFile = $('#liveUnivSpecCompFile').files && $('#liveUnivSpecCompFile').files[0];
+    var uscYear = $('#liveUnivSpecCompYearInput').value.trim();
+    if (!uscFile || !uscYear){ setState({liveMessage:'파일과 연도를 모두 입력해주세요.', liveMessageType:'error'}); return; }
+    setState({liveLoading:true, liveMessage:'업로드 중...', liveMessageType:'info'});
+    apiUnivSpecialAdmissionRatioUpload(uscFile, uscYear).then(function(result){
+      var msg = '특별전형 경쟁률 업로드 완료: '+result.inserted+'건 등록 (해당 연도 기존 특별전형 자료는 교체됨)';
       var msgType = 'ok';
       if (result.warnings && result.warnings.length){
         msg += ' (일부 시트 인식 실패: ' + result.warnings.join(' / ') + ')';

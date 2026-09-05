@@ -5,6 +5,7 @@ const db = require('../db');
 const { readWorkbookRobust } = require('../parsers/normalizeXlsx');
 const { parseCompetitionRatioWorkbook } = require('../parsers/competitionRatioParser');
 const { parseAcademicCompetitionWorkbook } = require('../parsers/academicCompetitionRatioParser');
+const { parseSpecialAdmissionWorkbook } = require('../parsers/specialAdmissionRatioParser');
 const { requireAdmin } = require('../middleware/requireAdmin');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -264,6 +265,70 @@ router.post('/academic-competition-ratio-upload', requireAdmin, upload.single('f
       }).join(',');
       await client.query(
         `INSERT INTO university_academic_competition (univ_name, dept_name, year, quota_academic, applicants_academic, track, college, combined_flag)
+         VALUES ${placeholders}`,
+        values
+      );
+      inserted += batch.length;
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ inserted, year, warnings: warnings && warnings.length ? warnings : undefined });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'DB 저장 실패: ' + err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// 특별전형(농어촌/재외국민 등) 경쟁률 자료 조회 (참고/확인용).
+router.get('/special-admission-ratio', async (req, res) => {
+  const { year, univ_name, dept_name } = req.query;
+  const conditions = [];
+  const params = [];
+  let sql = 'SELECT * FROM university_special_admission';
+  if (year) { params.push(Number(year)); conditions.push(`year = $${params.length}`); }
+  if (univ_name) { params.push(`%${univ_name}%`); conditions.push(`univ_name ILIKE $${params.length}`); }
+  if (dept_name) { params.push(`%${dept_name}%`); conditions.push(`dept_name ILIKE $${params.length}`); }
+  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+  sql += ' ORDER BY univ_name, dept_name, id';
+  const { rows } = await db.query(sql, params);
+  res.json(rows);
+});
+
+// 특별전형 경쟁률 업로드 (예: "26학년도 특별전형 경쟁률.xlsx"). university_master(일반), 학사 데이터와
+// 완전히 별도 테이블이라 다른 데이터는 전혀 건드리지 않는다. 전형별로 줄이 여러 개일 수 있어 upsert가
+// 아니라, 해당 연도 기존 행을 지우고 새로 전부 넣는 방식(전체 교체)으로 처리한다.
+router.post('/special-admission-ratio-upload', requireAdmin, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
+  const year = Number(req.body.year);
+  if (!year) return res.status(400).json({ error: 'year(입시 연도)가 필요합니다.' });
+
+  let records, warnings;
+  try {
+    const wb = readWorkbookRobust(req.file.buffer);
+    const result = parseSpecialAdmissionWorkbook(wb);
+    records = result.records;
+    warnings = result.warnings;
+  } catch (err) {
+    return res.status(422).json({ error: '특별전형 경쟁률 자료 파싱 실패: ' + err.message });
+  }
+
+  const BATCH_SIZE = 200;
+  const client = await db.pool.connect();
+  let inserted = 0;
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM university_special_admission WHERE year=$1', [year]);
+    for (let i = 0; i < records.length; i += BATCH_SIZE) {
+      const batch = records.slice(i, i + BATCH_SIZE);
+      const values = [];
+      const placeholders = batch.map((r, idx) => {
+        const base = idx * 9;
+        values.push(r.univName, r.deptName, r.admissionType, year, r.quotaSpecial, r.applicantsSpecial, r.track, r.college, r.isCombinedSelection);
+        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9})`;
+      }).join(',');
+      await client.query(
+        `INSERT INTO university_special_admission (univ_name, dept_name, admission_type, year, quota_special, applicants_special, track, college, combined_flag)
          VALUES ${placeholders}`,
         values
       );
