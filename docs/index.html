@@ -141,6 +141,7 @@ var state = {
   liveLoading: false,
   liveMessage: '',
   liveMessageType: 'info', // info | error | ok
+  liveAcctList: null,
   liveRounds: [],
   liveRoundsLoaded: false,
   liveNewRound: { exam_date:'', professor_name:'', class_name:'', round_label:'', academy_name:'' },
@@ -267,6 +268,15 @@ function apiFetch(path, opts){
 
 function apiLogin(username, password){
   return apiFetch('/api/admin/login', { method:'POST', body: JSON.stringify({ username:username, password:password }) });
+}
+function apiAdminAccountsList(){
+  return apiFetch('/api/admin/accounts');
+}
+function apiAdminAccountCreate(payload){
+  return apiFetch('/api/admin/accounts', { method:'POST', body: JSON.stringify(payload) });
+}
+function apiAdminAccountDelete(id){
+  return apiFetch('/api/admin/accounts/'+id, { method:'DELETE' });
 }
 function apiListExamRounds(){
   return apiFetch('/api/exam-rounds');
@@ -510,7 +520,9 @@ function renderLiveTab(){
   }
 
   html += '<div class="subtabs">';
-  [['rounds','회차관리'],['results','성적표'],['students','학생조회'],['dashboard','대시보드'],['questions','문항통계'],['univ','대학DB'],['admission','합격DB']].forEach(function(t){
+  var liveSubtabs = [['rounds','회차관리'],['results','성적표'],['students','학생조회'],['dashboard','대시보드'],['questions','문항통계'],['univ','대학DB'],['admission','합격DB']];
+  if (state.liveAdmin && state.liveAdmin.username === 'shikw2') liveSubtabs.push(['accounts','계정관리']);
+  liveSubtabs.forEach(function(t){
     html += '<button data-act="setLiveSubtab" data-sub="'+t[0]+'" class="'+(state.liveSubtab===t[0]?'active':'')+'">'+t[1]+'</button>';
   });
   html += '</div>';
@@ -530,6 +542,8 @@ function renderLiveTab(){
     html += renderLiveUnivTab();
   } else if (state.liveSubtab==='admission'){
     html += renderLiveAdmissionTab();
+  } else if (state.liveSubtab==='accounts' && state.liveAdmin && state.liveAdmin.username === 'shikw2'){
+    html += renderLiveAccountsTab();
   }
   return html;
 }
@@ -1062,6 +1076,34 @@ function renderLiveUnivTab(){
       }
       html += '</div>';
     }
+  }
+  return html;
+}
+
+// 관리자 계정 관리: 새 관리자 추가 + 목록/삭제. 로그인된 관리자면 누구나 접근 가능.
+function renderLiveAccountsTab(){
+  var html = '<div class="card"><h3>관리자 계정 추가</h3>';
+  html += '<div class="note">아이디/비밀번호를 입력해 새 관리자 계정을 만듭니다. 비밀번호는 4자 이상이어야 합니다.</div>';
+  html += '<div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-top:8px">';
+  html += liveInput('liveAcctNewUsername', '아이디', '');
+  html += liveInput('liveAcctNewPassword', '비밀번호', '');
+  html += '</div>';
+  html += '<button class="btn" data-act="liveAcctAdd" '+(state.liveLoading?'disabled':'')+'>추가</button>';
+  html += '</div>';
+
+  html += '<div class="card"><h3>관리자 계정 목록</h3>';
+  if (!state.liveAcctList){
+    html += '<div class="empty">불러오는 중입니다...</div></div>';
+  } else if (state.liveAcctList.length===0){
+    html += '<div class="empty">등록된 관리자 계정이 없습니다.</div></div>';
+  } else {
+    html += '<div class="table-wrap"><table><thead><tr><th>아이디</th><th>역할</th><th>생성일</th><th></th></tr></thead><tbody>';
+    state.liveAcctList.forEach(function(a){
+      var isMe = state.liveAdmin && state.liveAdmin.id === a.id;
+      html += '<tr><td>'+esc(a.username)+(isMe?' (나)':'')+'</td><td>'+esc(a.role)+'</td><td>'+fmtDateCompact(a.created_at)+'</td>'
+        + '<td>'+(isMe ? '' : '<button class="btn secondary" data-act="liveAcctDelete" data-id="'+a.id+'" style="font-size:11px;padding:4px 8px;color:var(--bad);border-color:var(--bad)">삭제</button>')+'</td></tr>';
+    });
+    html += '</tbody></table></div></div>';
   }
   return html;
 }
@@ -1631,7 +1673,7 @@ document.addEventListener('click', function(e){
   }
   else if (act==='liveLogout'){
     storeAuth(null, null);
-    setState({liveToken:null, liveAdmin:null, liveRounds:[], liveRoundsLoaded:false, liveMessage:'', liveExpandedRoundId:null});
+    setState({liveToken:null, liveAdmin:null, liveRounds:[], liveRoundsLoaded:false, liveMessage:'', liveExpandedRoundId:null, liveAcctList:null});
   }
   else if (act==='liveCreateRound'){
     // 날짜는 YYMMDD(예: 260806) 형식일 때만 실제 날짜로 변환하고, 그 외에는 그냥 비워둔다 (서버가 현재 연도로 채움).
@@ -1710,6 +1752,11 @@ document.addEventListener('click', function(e){
           setState({admissionDeptList:list});
         }).catch(function(err){ setState({admissionMessage:err.message, admissionMessageType:'error'}); });
       }
+    }
+    if (newSub==='accounts' && !state.liveAcctList && state.liveAdmin && state.liveAdmin.username === 'shikw2'){
+      apiAdminAccountsList().then(function(list){
+        setState({liveAcctList:list});
+      }).catch(function(err){ setState({liveMessage:err.message, liveMessageType:'error'}); });
     }
   }
   else if (act==='admissionCasesUpload'){
@@ -2004,6 +2051,33 @@ document.addEventListener('click', function(e){
       return apiGetUnivMaster({ year: state.liveUnivYear, univ_name: state.liveUnivSearch });
     }).then(function(list){
       setState({liveLoading:false, liveUnivList:list});
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:err.message, liveMessageType:'error'});
+    });
+  }
+  else if (act==='liveAcctAdd'){
+    var newU = $('#liveAcctNewUsername').value.trim();
+    var newP = $('#liveAcctNewPassword').value;
+    if (!newU || !newP){ setState({liveMessage:'아이디와 비밀번호를 모두 입력해주세요.', liveMessageType:'error'}); return; }
+    setState({liveLoading:true});
+    apiAdminAccountCreate({ username:newU, password:newP }).then(function(){
+      setState({liveMessage:'관리자 계정이 추가되었습니다.', liveMessageType:'ok'});
+      return apiAdminAccountsList();
+    }).then(function(list){
+      setState({liveLoading:false, liveAcctList:list});
+    }).catch(function(err){
+      setState({liveLoading:false, liveMessage:err.message, liveMessageType:'error'});
+    });
+  }
+  else if (act==='liveAcctDelete'){
+    var delId = el.getAttribute('data-id');
+    if (!window.confirm('이 관리자 계정을 삭제할까요?')) return;
+    setState({liveLoading:true});
+    apiAdminAccountDelete(delId).then(function(){
+      setState({liveMessage:'삭제되었습니다.', liveMessageType:'ok'});
+      return apiAdminAccountsList();
+    }).then(function(list){
+      setState({liveLoading:false, liveAcctList:list});
     }).catch(function(err){
       setState({liveLoading:false, liveMessage:err.message, liveMessageType:'error'});
     });
