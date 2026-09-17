@@ -717,14 +717,23 @@ router.get('/self-quiz/:self_exam_no', async (req, res) => {
 
 // 대학교별 기출점수 누적 현황. exam_no를 같이 넘기면 그 학생의 점수도 같이 표시해서 비교할 수 있다.
 // (관리자 화면도 이 API를 그대로 사용한다 — 읽기 전용 집계라 별도 인증이 필요 없음.)
-// 실제 합격 여부는 admission_cases와 exam_no로 조인해서 그때그때 판단한다.
+// 실제 합격 여부는 admission_cases와 조인해서 그때그때 판단하는데, 합격자명단 파일에 수험번호 컬럼이
+// 없고 "아이디"만 있는 경우가 많아(admission_cases.exam_no가 NULL) 수험번호로 직접 매칭이 안 될 수
+// 있다. 그래서 직접 매칭이 안 되면 student_external_id_map(외부모의고사 등에서 수험번호<->아이디로
+// 같이 올라온 적이 있으면 쌓여 있음)을 거쳐 아이디로도 한 번 더 시도한다.
 router.get('/univ-past-exam-scores', async (req, res) => {
   const { exam_no } = req.query;
   const { rows } = await db.query(
     `SELECT s.univ_name, s.exam_year, s.subject_combo, s.score, s.exam_no,
-            (ac.exam_no IS NOT NULL) AS is_admitted
+            (
+              EXISTS (SELECT 1 FROM admission_cases ac WHERE ac.exam_no = s.exam_no)
+              OR EXISTS (
+                SELECT 1 FROM student_external_id_map m
+                JOIN admission_cases ac2 ON ac2.student_external_id = m.student_external_id
+                WHERE m.exam_no = s.exam_no
+              )
+            ) AS is_admitted
      FROM univ_past_exam_scores s
-     LEFT JOIN admission_cases ac ON ac.exam_no = s.exam_no
      ORDER BY s.univ_name, s.exam_year DESC, s.subject_combo`
   );
 

@@ -443,13 +443,16 @@ router.post('/univ-past-exam-scores/upload', upload.single('file'), async (req, 
 // 특정 (대학, 기출연도, 과목) 버킷을 누가 풀었고 그 학생이 실제로 어디에 합격했는지 상세 내역.
 // 관리자 전용 — 다른 학생 이름/합격 결과가 드러나므로 로그인 없이 접근 가능한 /api/portal 쪽에는 올리지 않는다.
 // 한 학생이 admission_cases에 합격 사례가 여러 건(복수 지원)일 수 있어 하나의 문자열로 합쳐서 보여준다.
+// 합격자명단 파일에 수험번호 컬럼이 없고 "아이디"만 있는 경우가 많아(admission_cases.exam_no가 NULL)
+// 수험번호 직접 매칭이 안 되면 student_external_id_map을 거쳐 아이디로도 한 번 더 시도한다.
 router.get('/univ-past-exam-scores/detail', async (req, res) => {
   const { univ_name, exam_year, subject_combo } = req.query;
   const conditions = [];
   const params = [];
   let sql = `
     SELECT s.exam_no, s.univ_name, s.exam_year, s.subject_combo, s.score,
-           am.real_name, am.admitted_list
+           COALESCE(direct.real_name, viamap.real_name) AS real_name,
+           COALESCE(direct.admitted_list, viamap.admitted_list) AS admitted_list
     FROM univ_past_exam_scores s
     LEFT JOIN (
       SELECT exam_no, MAX(real_name) AS real_name,
@@ -457,7 +460,15 @@ router.get('/univ-past-exam-scores/detail', async (req, res) => {
       FROM admission_cases
       WHERE exam_no IS NOT NULL
       GROUP BY exam_no
-    ) am ON am.exam_no = s.exam_no`;
+    ) direct ON direct.exam_no = s.exam_no
+    LEFT JOIN student_external_id_map m ON m.exam_no = s.exam_no
+    LEFT JOIN (
+      SELECT student_external_id, MAX(real_name) AS real_name,
+             STRING_AGG(univ_name || ' ' || dept_name, ', ') AS admitted_list
+      FROM admission_cases
+      WHERE student_external_id IS NOT NULL
+      GROUP BY student_external_id
+    ) viamap ON viamap.student_external_id = m.student_external_id`;
   if (univ_name) { params.push(univ_name); conditions.push(`s.univ_name = $${params.length}`); }
   if (exam_year) { params.push(Number(exam_year)); conditions.push(`s.exam_year = $${params.length}`); }
   if (subject_combo) { params.push(subject_combo); conditions.push(`s.subject_combo = $${params.length}`); }
