@@ -7,6 +7,7 @@ const db = require('../db');
 const { readWorkbookRobust } = require('../parsers/normalizeXlsx');
 const { parseAdmissionCaseWorkbook } = require('../parsers/admissionCaseParser');
 const { parseExternalMockWorkbook } = require('../parsers/externalMockParser');
+const { parseUnivPastExamWorkbook } = require('../parsers/univPastExamScoreParser');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -373,6 +374,64 @@ router.post('/retest-rounds/:id/upload', upload.single('file'), async (req, res)
     }
     await client.query('COMMIT');
     res.status(201).json({ retestRoundId, scoreCount: inserted, warnings: warnings && warnings.length ? warnings : undefined });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'DB 저장 실패: ' + err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------- 대학별 기출점수 (합격자가 그 대학 기출문제를 풀어본 점수 누적 DB) ----------
+// "이름/수험번호/계열/합격대학/응시횟수" 고정 컬럼 + "대학명 '연도 과목" 형태의 점수 컬럼이 반복되는
+// 넓은 표 형식 파일을 올리면, 셀 하나하나를 (수험번호, 대학, 기출연도, 과목) 레코드로 풀어서 저장한다.
+// 같은 조합이 다시 올라오면 최신 값으로 덮어쓰고, 조합이 다르면 계속 쌓인다 — 시간이 지날수록
+// 같은 대학·같은 기출연도 버킷에 더 많은 학생의 점수가 모이는 구조.
+router.post('/univ-past-exam-scores/upload', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
+
+  let records, warnings;
+  try {
+    const wb = readWorkbookRobust(req.file.buffer);
+    const result = parseUnivPastExamWorkbook(wb);
+    records = result.records;
+    warnings = result.warnings;
+  } catch (err) {
+    return res.status(422).json({ error: '대학별 기출점수 파싱 실패: ' + err.message });
+  }
+
+  // 같은 배치 안에서 (exam_no, univ_name, exam_year, subject_combo) 키가 중복되면 Postgres가
+  // "ON CONFLICT DO UPDATE command cannot affect row a second time" 에러를 내므로 먼저 정리한다(마지막 값 우선).
+  const recordMap = new Map();
+  for (const r of records) {
+    recordMap.set(`${r.examNo}|||${r.univName}|||${r.examYear}|||${r.subjectCombo}`, r);
+  }
+  const uniqueRecords = [...recordMap.values()];
+
+  const BATCH_SIZE = 200;
+  const client = await db.pool.connect();
+  let inserted = 0;
+  try {
+    await client.query('BEGIN');
+    for (let i = 0; i < uniqueRecords.length; i += BATCH_SIZE) {
+      const batch = uniqueRecords.slice(i, i + BATCH_SIZE);
+      const values = [];
+      const placeholders = batch.map((r, idx) => {
+        const base = idx * 5;
+        values.push(r.examNo, r.univName, r.examYear, r.subjectCombo, r.score);
+        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5})`;
+      }).join(',');
+      await client.query(
+        `INSERT INTO univ_past_exam_scores (exam_no, univ_name, exam_year, subject_combo, score)
+         VALUES ${placeholders}
+         ON CONFLICT (exam_no, univ_name, exam_year, subject_combo)
+         DO UPDATE SET score=EXCLUDED.score, updated_at=now()`,
+        values
+      );
+      inserted += batch.length;
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ inserted, warnings: warnings && warnings.length ? warnings : undefined });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: 'DB 저장 실패: ' + err.message });

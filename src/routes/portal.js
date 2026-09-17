@@ -715,4 +715,58 @@ router.get('/self-quiz/:self_exam_no', async (req, res) => {
   })));
 });
 
+// 대학교별 기출점수 누적 현황. exam_no를 같이 넘기면 그 학생의 점수도 같이 표시해서 비교할 수 있다.
+// (관리자 화면도 이 API를 그대로 사용한다 — 읽기 전용 집계라 별도 인증이 필요 없음.)
+// 실제 합격 여부는 admission_cases와 exam_no로 조인해서 그때그때 판단한다.
+router.get('/univ-past-exam-scores', async (req, res) => {
+  const { exam_no } = req.query;
+  const { rows } = await db.query(
+    `SELECT s.univ_name, s.exam_year, s.subject_combo, s.score, s.exam_no,
+            (ac.exam_no IS NOT NULL) AS is_admitted
+     FROM univ_past_exam_scores s
+     LEFT JOIN admission_cases ac ON ac.exam_no = s.exam_no
+     ORDER BY s.univ_name, s.exam_year DESC, s.subject_combo`
+  );
+
+  const univMap = new Map();
+  for (const r of rows) {
+    if (!univMap.has(r.univ_name)) univMap.set(r.univ_name, new Map());
+    const yearMap = univMap.get(r.univ_name);
+    if (!yearMap.has(r.exam_year)) yearMap.set(r.exam_year, new Map());
+    const subjMap = yearMap.get(r.exam_year);
+    if (!subjMap.has(r.subject_combo)) subjMap.set(r.subject_combo, []);
+    subjMap.get(r.subject_combo).push(r);
+  }
+
+  const universities = [];
+  for (const [univName, yearMap] of univMap) {
+    const years = [];
+    for (const [examYear, subjMap] of yearMap) {
+      const subjects = [];
+      for (const [subjectCombo, entries] of subjMap) {
+        const scores = entries.map(e => Number(e.score)).filter(n => Number.isFinite(n));
+        const n = scores.length;
+        const admittedN = entries.filter(e => e.is_admitted).length;
+        const mine = exam_no ? entries.find(e => e.exam_no === exam_no) : null;
+        subjects.push({
+          subjectCombo,
+          n,
+          minScore: n ? Math.min(...scores) : null,
+          avgScore: n ? Math.round((scores.reduce((a, b) => a + b, 0) / n) * 10) / 10 : null,
+          maxScore: n ? Math.max(...scores) : null,
+          admittedN,
+          myScore: mine ? Number(mine.score) : null
+        });
+      }
+      subjects.sort((a, b) => a.subjectCombo.localeCompare(b.subjectCombo, 'ko'));
+      years.push({ examYear, subjects });
+    }
+    years.sort((a, b) => b.examYear - a.examYear);
+    universities.push({ univName, years });
+  }
+  universities.sort((a, b) => a.univName.localeCompare(b.univName, 'ko'));
+
+  res.json({ universities });
+});
+
 module.exports = router;

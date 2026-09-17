@@ -166,6 +166,7 @@ var state = {
   retestNewSourceMonth: '',
   retestNewYear: new Date().getFullYear(),
   retestNewMonth: '',
+  liveUnivPastExam: null,
 
   // ---- 실제 연동 2단계: 성적표/학생관리/대시보드/문항통계/대학DB ----
   liveSubtab: 'rounds', // rounds | results | students | dashboard | questions | univ
@@ -209,6 +210,7 @@ var state = {
   pvExternalMock: null,
   pvAdmissionCompare: null,
   pvRetestCompare: null,
+  pvPastExam: null,
   pvWrong: null,
   pvDeptRank: null,
   pvUnivMatches: null,
@@ -437,6 +439,15 @@ function apiPortalAdmissionComparison(examNo){
 }
 function apiPortalRetestComparison(examNo){
   return apiFetch('/api/portal/retest-comparison?exam_no=' + encodeURIComponent(examNo));
+}
+function apiPortalUnivPastExamScores(examNo){
+  var q = examNo ? ('?exam_no=' + encodeURIComponent(examNo)) : '';
+  return apiFetch('/api/portal/univ-past-exam-scores' + q);
+}
+function apiUnivPastExamScoresUpload(file){
+  var fd = new FormData();
+  fd.append('file', file);
+  return apiFetch('/api/admission-prediction/univ-past-exam-scores/upload', { method:'POST', body: fd });
 }
 function apiPortalDeptTrackRank(examRoundId, examNo){
   return apiFetch('/api/portal/rounds/' + examRoundId + '/dept-track-rank?exam_no=' + encodeURIComponent(examNo));
@@ -985,6 +996,34 @@ function renderLiveAdmissionTab(){
     html += '</div>';
   }
 
+  html += '<div class="card"><h3>대학교별 기출점수 업로드</h3>';
+  html += '<div class="note">"이름/수험번호/계열/합격대학/응시횟수" + 대학별 점수 컬럼(예: "건국대 \'23 영어")이 있는 넓은 표 형식 파일을 올립니다. 셀 하나하나가 (수험번호, 대학, 기출연도, 과목) 점수로 저장되고, 같은 조합이 다시 올라오면 최신 값으로 덮어씁니다. 기존 합격자명단/모의고사 데이터는 건드리지 않습니다.</div>';
+  html += '<input type="file" id="univPastExamFileInput" accept=".xlsx" style="margin-top:8px;display:block"/>';
+  html += '<button class="btn" data-act="univPastExamUpload" style="margin-top:8px">업로드</button>';
+  html += '<button class="btn secondary" data-act="univPastExamRefresh" style="margin-top:8px;margin-left:8px">'+(state.liveLoading?'불러오는 중...':'전체 현황 새로고침')+'</button>';
+  html += '</div>';
+
+  if (state.liveUnivPastExam){
+    var upe = state.liveUnivPastExam;
+    html += '<div class="card"><h3>대학교별 기출점수 전체 현황</h3>';
+    if (!upe.universities || upe.universities.length===0){
+      html += '<div class="empty">아직 쌓인 데이터가 없습니다.</div></div>';
+    } else {
+      upe.universities.forEach(function(u){
+        html += '<div style="margin-top:10px"><div style="font-weight:600;margin-bottom:4px">'+esc(u.univName)+'</div>';
+        html += '<div class="table-wrap"><table><thead><tr><th>기출연도</th><th>과목</th><th>표본수</th><th>최저~최고</th><th>평균</th><th>합격 확정</th></tr></thead><tbody>';
+        u.years.forEach(function(y){
+          y.subjects.forEach(function(s){
+            html += '<tr><td>'+y.examYear+'</td><td>'+esc(s.subjectCombo)+'</td><td>'+s.n+'</td>'
+              + '<td>'+(s.n?s.minScore+' ~ '+s.maxScore:'-')+'</td><td>'+(s.n?s.avgScore:'-')+'</td><td>'+s.admittedN+'명</td></tr>';
+          });
+        });
+        html += '</tbody></table></div></div>';
+      });
+      html += '</div>';
+    }
+  }
+
   return html;
 }
 function renderLiveUnivTab(){
@@ -1248,7 +1287,7 @@ function renderPortalLiveLookup(){
   var rows = state.pvLookupResults || [];
 
   html += '<div class="subtabs">';
-  [['report','성적표'],['wrong','누적오답노트'],['univ','대학 매칭'],['trend','역대 성적 비교'],['emock','외부 모의고사'],['admission','합격생 비교']].forEach(function(t){
+  [['report','성적표'],['wrong','누적오답노트'],['univ','대학 매칭'],['trend','역대 성적 비교'],['emock','외부 모의고사'],['admission','합격생 비교'],['pastexam','대학교별']].forEach(function(t){
     html += '<button data-act="pvSetSub" data-sub="'+t[0]+'" class="'+(state.pvSubtab===t[0]?'active':'')+'">'+t[1]+'</button>';
   });
   html += '</div>';
@@ -1258,6 +1297,7 @@ function renderPortalLiveLookup(){
   else if (state.pvSubtab==='trend') html += renderPvTrendTab(rows);
   else if (state.pvSubtab==='emock') html += renderPvExternalMockTab();
   else if (state.pvSubtab==='admission') html += renderPvAdmissionCompareTab();
+  else if (state.pvSubtab==='pastexam') html += renderPvPastExamTab();
   else html += renderPvReportTab(rows);
   return html;
 }
@@ -1410,6 +1450,43 @@ function renderPvRetestCompareSection(){
     html += '</tbody></table></div></div>';
   });
   html += '</div>';
+  return html;
+}
+
+// 대학교별 기출점수 누적 현황 — 대학의 기출문제를 풀어본 점수가 (대학, 기출연도, 과목) 단위로 계속
+// 쌓이는 누적 DB. 내 수험번호와 일치하는 점수는 강조 표시하고, 그중 합격이 확정된 학생 수도 같이 보여준다.
+function renderPvPastExamTab(){
+  var html = '<div class="card"><h3>대학교별 기출점수</h3>';
+  html += '<div class="note">대학별 기출문제를 풀어본 점수가 쌓인 누적 데이터입니다. 같은 대학·같은 기출연도·같은 과목을 여러 학생이 풀수록 표본이 늘어납니다. "합격 확정"은 그 점수를 낸 학생 중 실제로 합격자 명단에 있는 인원 수입니다.</div>';
+  var d = state.pvPastExam;
+  if (d===null){
+    html += '<div class="empty" style="margin-top:10px">불러오는 중입니다...</div></div>';
+    return html;
+  }
+  if (d.note && (!d.universities || d.universities.length===0)){
+    html += '<div class="empty" style="margin-top:10px">'+esc(d.note)+'</div></div>';
+    return html;
+  }
+  if (!d.universities || d.universities.length===0){
+    html += '<div class="empty" style="margin-top:10px">아직 쌓인 대학별 기출점수 데이터가 없습니다.</div></div>';
+    return html;
+  }
+  html += '</div>';
+  d.universities.forEach(function(u){
+    html += '<div class="card" style="margin-top:12px"><h3>'+esc(u.univName)+'</h3>';
+    html += '<div class="table-wrap"><table><thead><tr><th>기출연도</th><th>과목</th><th>표본수</th><th>최저~최고</th><th>평균</th><th>내 점수</th><th>합격 확정</th></tr></thead><tbody>';
+    u.years.forEach(function(y){
+      y.subjects.forEach(function(s){
+        html += '<tr><td>'+y.examYear+'</td><td>'+esc(s.subjectCombo)+'</td>'
+          + '<td>'+s.n+'</td>'
+          + '<td>'+(s.n?s.minScore+' ~ '+s.maxScore:'-')+'</td>'
+          + '<td>'+(s.n?s.avgScore:'-')+'</td>'
+          + '<td>'+(s.myScore!==null&&s.myScore!==undefined?'<b>'+s.myScore+'</b>':'-')+'</td>'
+          + '<td>'+s.admittedN+'명</td></tr>';
+      });
+    });
+    html += '</tbody></table></div></div>';
+  });
   return html;
 }
 
@@ -1822,6 +1899,33 @@ document.addEventListener('click', function(e){
       setState({liveLoading:false, admissionMessage:err.message, admissionMessageType:'error'});
     });
   }
+  else if (act==='univPastExamUpload'){
+    var upeFile = $('#univPastExamFileInput').files && $('#univPastExamFileInput').files[0];
+    if (!upeFile){ setState({admissionMessage:'파일을 선택해주세요.', admissionMessageType:'error'}); return; }
+    setState({liveLoading:true, admissionMessage:'업로드 중...', admissionMessageType:'info'});
+    apiUnivPastExamScoresUpload(upeFile).then(function(result){
+      var msg = '대학별 기출점수 업로드 완료: '+result.inserted+'건 등록/갱신';
+      var msgType = 'ok';
+      if (result.warnings && result.warnings.length){
+        msg += ' (일부 시트 인식 실패: ' + result.warnings.join(' / ') + ')';
+        msgType = 'error';
+      }
+      setState({admissionMessage:msg, admissionMessageType:msgType});
+      return apiPortalUnivPastExamScores(null);
+    }).then(function(d){
+      setState({liveLoading:false, liveUnivPastExam:d});
+    }).catch(function(err){
+      setState({liveLoading:false, admissionMessage:err.message, admissionMessageType:'error'});
+    });
+  }
+  else if (act==='univPastExamRefresh'){
+    setState({liveLoading:true});
+    apiPortalUnivPastExamScores(null).then(function(d){
+      setState({liveLoading:false, liveUnivPastExam:d});
+    }).catch(function(err){
+      setState({liveLoading:false, admissionMessage:err.message, admissionMessageType:'error'});
+    });
+  }
   else if (act==='admissionDistSearch'){
     var duUniv = document.getElementById('distUnivInput').value.trim();
     var duDept = document.getElementById('distDeptInput').value.trim();
@@ -2102,7 +2206,7 @@ document.addEventListener('click', function(e){
     setState({
       pvStage:'entry', pvExamNo:'', pvLookupResults:null, pvError:'',
       pvSelfName:'', pvSelfExamNo:null, pvSelfRoundId:null, pvSelfQuestions:null, pvSelfAnswers:{}, pvSelfResult:null,
-      pvSubtab:'report', pvReportRoundId:null, pvWrong:null, pvDeptRank:null, pvUnivMatches:null, pvDeptTrackRankCache:{}, pvExternalMock:null, pvAdmissionCompare:null, pvRetestCompare:null
+      pvSubtab:'report', pvReportRoundId:null, pvWrong:null, pvDeptRank:null, pvUnivMatches:null, pvDeptTrackRankCache:{}, pvExternalMock:null, pvAdmissionCompare:null, pvRetestCompare:null, pvPastExam:null
     });
   }
   else if (act==='pvToggleAnswers'){
@@ -2168,6 +2272,13 @@ document.addEventListener('click', function(e){
         setState({pvRetestCompare: d});
       }).catch(function(err){
         setState({pvRetestCompare: { retests: [] }});
+      });
+    }
+    if (pvSub==='pastexam' && state.pvPastExam===null){
+      apiPortalUnivPastExamScores(state.pvExamNo).then(function(d){
+        setState({pvPastExam: d});
+      }).catch(function(err){
+        setState({pvPastExam: { universities: [], note: err.message }});
       });
     }
   }
