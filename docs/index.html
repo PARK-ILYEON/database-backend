@@ -537,7 +537,7 @@ function renderLiveTab(){
   }
 
   html += '<div class="subtabs">';
-  var liveSubtabs = [['rounds','회차관리'],['results','성적표'],['students','학생조회'],['dashboard','대시보드'],['questions','문항통계'],['univ','대학DB'],['admission','합격DB']];
+  var liveSubtabs = [['rounds','회차관리'],['results','성적표'],['students','학생조회'],['dashboard','대시보드'],['questions','문항통계'],['univ','대학DB'],['admission','합격DB'],['pastexam','연도별 학교별 점수']];
   if (state.liveAdmin && state.liveAdmin.username === 'shikw2') liveSubtabs.push(['accounts','계정관리']);
   liveSubtabs.forEach(function(t){
     html += '<button data-act="setLiveSubtab" data-sub="'+t[0]+'" class="'+(state.liveSubtab===t[0]?'active':'')+'">'+t[1]+'</button>';
@@ -559,6 +559,8 @@ function renderLiveTab(){
     html += renderLiveUnivTab();
   } else if (state.liveSubtab==='admission'){
     html += renderLiveAdmissionTab();
+  } else if (state.liveSubtab==='pastexam'){
+    html += renderLiveUnivPastExamTab();
   } else if (state.liveSubtab==='accounts' && state.liveAdmin && state.liveAdmin.username === 'shikw2'){
     html += renderLiveAccountsTab();
   }
@@ -1000,6 +1002,18 @@ function renderLiveAdmissionTab(){
       html += '</tbody></table></div>';
     }
     html += '</div>';
+  }
+
+  return html;
+}
+
+// 연도별·학교별 기출점수 업로드 + 전체 현황 (합격DB와는 별도 탭)
+function renderLiveUnivPastExamTab(){
+  var html = '';
+
+  if (state.admissionMessage){
+    var isErr2 = state.admissionMessageType==='error';
+    html += '<div class="note" style="'+(isErr2?'border-color:#EBB;background:#FDEEEE;color:var(--bad)':'border-color:#CDE8CD;background:#F4FAF4;color:var(--ok)')+'">'+esc(state.admissionMessage)+'</div>';
   }
 
   html += '<div class="card"><h3>대학교별 기출점수 업로드</h3>';
