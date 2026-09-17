@@ -167,6 +167,8 @@ var state = {
   retestNewYear: new Date().getFullYear(),
   retestNewMonth: '',
   liveUnivPastExam: null,
+  univPastExamDetailKey: null,
+  univPastExamDetailRows: null,
 
   // ---- 실제 연동 2단계: 성적표/학생관리/대시보드/문항통계/대학DB ----
   liveSubtab: 'rounds', // rounds | results | students | dashboard | questions | univ
@@ -448,6 +450,10 @@ function apiUnivPastExamScoresUpload(file){
   var fd = new FormData();
   fd.append('file', file);
   return apiFetch('/api/admission-prediction/univ-past-exam-scores/upload', { method:'POST', body: fd });
+}
+function apiUnivPastExamDetail(univName, examYear, subjectCombo){
+  var q = '?univ_name='+encodeURIComponent(univName)+'&exam_year='+encodeURIComponent(examYear)+'&subject_combo='+encodeURIComponent(subjectCombo);
+  return apiFetch('/api/admission-prediction/univ-past-exam-scores/detail'+q);
 }
 function apiPortalDeptTrackRank(examRoundId, examNo){
   return apiFetch('/api/portal/rounds/' + examRoundId + '/dept-track-rank?exam_no=' + encodeURIComponent(examNo));
@@ -1006,16 +1012,36 @@ function renderLiveAdmissionTab(){
   if (state.liveUnivPastExam){
     var upe = state.liveUnivPastExam;
     html += '<div class="card"><h3>대학교별 기출점수 전체 현황</h3>';
+    html += '<div class="note">"상세" 버튼을 누르면 그 대학·기출연도·과목을 누가 풀었고 실제로 어디에 합격했는지 확인할 수 있습니다.</div>';
     if (!upe.universities || upe.universities.length===0){
       html += '<div class="empty">아직 쌓인 데이터가 없습니다.</div></div>';
     } else {
       upe.universities.forEach(function(u){
         html += '<div style="margin-top:10px"><div style="font-weight:600;margin-bottom:4px">'+esc(u.univName)+'</div>';
-        html += '<div class="table-wrap"><table><thead><tr><th>기출연도</th><th>과목</th><th>표본수</th><th>최저~최고</th><th>평균</th><th>합격 확정</th></tr></thead><tbody>';
+        html += '<div class="table-wrap"><table><thead><tr><th>기출연도</th><th>과목</th><th>표본수</th><th>최저~최고</th><th>평균</th><th>합격 확정</th><th></th></tr></thead><tbody>';
         u.years.forEach(function(y){
           y.subjects.forEach(function(s){
+            var key = u.univName+'|||'+y.examYear+'|||'+s.subjectCombo;
             html += '<tr><td>'+y.examYear+'</td><td>'+esc(s.subjectCombo)+'</td><td>'+s.n+'</td>'
-              + '<td>'+(s.n?s.minScore+' ~ '+s.maxScore:'-')+'</td><td>'+(s.n?s.avgScore:'-')+'</td><td>'+s.admittedN+'명</td></tr>';
+              + '<td>'+(s.n?s.minScore+' ~ '+s.maxScore:'-')+'</td><td>'+(s.n?s.avgScore:'-')+'</td><td>'+s.admittedN+'명</td>'
+              + '<td><button class="btn secondary" data-act="univPastExamDetailToggle" data-univ="'+esc(u.univName)+'" data-year="'+y.examYear+'" data-subject="'+esc(s.subjectCombo)+'" style="font-size:11px;padding:4px 8px">'
+              + (state.univPastExamDetailKey===key?'닫기':'상세')+'</button></td></tr>';
+            if (state.univPastExamDetailKey===key){
+              html += '<tr><td colspan="7" style="background:var(--bg2,#fafafa)">';
+              if (!state.univPastExamDetailRows){
+                html += '<div class="empty">불러오는 중입니다...</div>';
+              } else if (state.univPastExamDetailRows.length===0){
+                html += '<div class="empty">데이터가 없습니다.</div>';
+              } else {
+                html += '<table><thead><tr><th>이름</th><th>수험번호</th><th>점수</th><th>합격 여부</th><th>합격 대학/학과</th></tr></thead><tbody>';
+                state.univPastExamDetailRows.forEach(function(r){
+                  html += '<tr><td>'+esc(r.real_name||'-')+'</td><td>'+esc(r.exam_no)+'</td><td>'+(r.score!==null&&r.score!==undefined?r.score:'-')+'</td>'
+                    + '<td>'+(r.admitted_list?'합격 확정':'-')+'</td><td>'+esc(r.admitted_list||'-')+'</td></tr>';
+                });
+                html += '</tbody></table>';
+              }
+              html += '</td></tr>';
+            }
           });
         });
         html += '</tbody></table></div></div>';
@@ -1924,6 +1950,22 @@ document.addEventListener('click', function(e){
       setState({liveLoading:false, liveUnivPastExam:d});
     }).catch(function(err){
       setState({liveLoading:false, admissionMessage:err.message, admissionMessageType:'error'});
+    });
+  }
+  else if (act==='univPastExamDetailToggle'){
+    var dUniv = el.getAttribute('data-univ');
+    var dYear = el.getAttribute('data-year');
+    var dSubject = el.getAttribute('data-subject');
+    var dKey = dUniv+'|||'+dYear+'|||'+dSubject;
+    if (state.univPastExamDetailKey===dKey){
+      setState({univPastExamDetailKey:null, univPastExamDetailRows:null});
+      return;
+    }
+    setState({univPastExamDetailKey:dKey, univPastExamDetailRows:null});
+    apiUnivPastExamDetail(dUniv, dYear, dSubject).then(function(rows){
+      setState({univPastExamDetailRows:rows});
+    }).catch(function(err){
+      setState({univPastExamDetailRows:[], admissionMessage:err.message, admissionMessageType:'error'});
     });
   }
   else if (act==='admissionDistSearch'){
